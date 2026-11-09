@@ -655,6 +655,20 @@ public struct HostClient: Sendable {
         }
     }
 
+    public func checkCapabilities() async throws -> ServerCapabilities {
+        let exchange = try await transport.execute(
+            method: "GET",
+            url: origin.resolve("/api/v1/capabilities"),
+            headers: headers(contentType: false),
+            body: nil
+        )
+        let data = try Self.successBody(exchange)
+        guard let caps = try? JSONDecoder().decode(ServerCapabilities.self, from: data) else {
+            throw HostError.malformedResponse
+        }
+        return caps
+    }
+
     private func headers(contentType: Bool) -> [String: String] {
         var result = [
             "authorization": "Bearer \(accessToken)",

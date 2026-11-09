@@ -54,12 +54,12 @@ private let capabilitiesJSON = """
     #expect(transport.requests[1].headers["authorization"] == "Bearer device-token")
 }
 
-@Test func redeemRejectsWorkstationScopes() async throws {
+@Test func redeemRejectsHostAdminScopes() async throws {
     let granted = """
-    {"device_id":"11111111-1111-1111-1111-111111111111","access_token":"t","scopes":["conversation.read","plugin.write"]}
+    {"device_id":"11111111-1111-1111-1111-111111111111","access_token":"t","scopes":["conversation.read","host.admin"]}
     """
     let transport = ScriptedTransport([granted], statuses: [201])
-    await #expect(throws: PairingError.nonCompanionScopes(["plugin.write"])) {
+    await #expect(throws: PairingError.nonCompanionScopes(["host.admin"])) {
         try await PairingClient(transport: transport).redeem(
             origin: HostOrigin.parse("https://host.example"),
             pairingToken: "token"
@@ -117,10 +117,10 @@ private final class FlakyTransport: HttpTransport, @unchecked Sendable {
     }
 }
 
-@Test func invitationRejectsWorkstationPresetBeforeAnyRequest() async throws {
+@Test func invitationRejectsUnknownPresetBeforeAnyRequest() async throws {
     let transport = ScriptedTransport([], statuses: [])
     let invitation = try PairingInvitation.parse(
-        invitationText(preset: "workstation", origins: ["http://192.168.1.2:17891"])
+        invitationText(preset: "admin", origins: ["http://192.168.1.2:17891"])
     )
     await #expect(throws: PairingError.notCompanionInvitation) {
         try await PairingClient(transport: transport).redeem(invitation: invitation)
@@ -181,3 +181,59 @@ private final class FlakyTransport: HttpTransport, @unchecked Sendable {
         )
     }
 }
+
+@Test func requestConnectAndPollConnectRoundTrip() async throws {
+    let pendingJSON = """
+    {"request_id":"req-123","host_id":"host-abc","host_name":"ltfdeMacBook-Pro.local","sas_code":"5890","status":"pending"}
+    """
+    let approvedJSON = """
+    {"request_id":"req-123","host_id":"host-abc","host_name":"ltfdeMacBook-Pro.local","sas_code":"5890","status":"approved","credential":\(credentialJSON)}
+    """
+    let transport = ScriptedTransport([pendingJSON, approvedJSON], statuses: [201, 200])
+    let client = PairingClient(transport: transport)
+    let origin = try HostOrigin.parse("https://relay.example.com/t/host-abc")
+
+    let requested = try await client.requestConnect(origin: origin, deviceName: "iPhone")
+    #expect(requested.requestId == "req-123")
+    #expect(requested.sasCode == "5890")
+    #expect(requested.status == "pending")
+    #expect(requested.credential == nil)
+
+    let polled = try await client.pollConnect(origin: origin, requestId: requested.requestId)
+    #expect(polled.status == "approved")
+    #expect(polled.credential?.access_token == "device-token")
+
+    let host = DiscoveredLanHost(origin: origin.value, hostId: "host-abc", name: "ltfdeMacBook-Pro.local")
+    #expect(host.isCloudService == true)
+    #expect(host.displayName == "ltfdeMacBook-Pro")
+}
+
+@Test func e2eeHandshakeAndEncryptionRoundTrip() throws {
+    let clientA = E2eeSessionManager()
+    let clientB = E2eeSessionManager()
+    let origin = "https://relay.example.com/t/host-e2ee-test"
+
+    let sessionA = clientA.ingestHandshake(
+        originOrUrl: origin,
+        sessionId: "sess-01",
+        serverPubBase64: clientB.clientPublicKeyBase64
+    )
+    let sessionB = clientB.ingestHandshake(
+        originOrUrl: origin,
+        sessionId: "sess-01",
+        serverPubBase64: clientA.clientPublicKeyBase64
+    )
+    #expect(sessionA != nil)
+    #expect(sessionB != nil)
+
+    let plaintext = Data("{\"prompt\":\"end-to-end encrypted message\"}".utf8)
+    let encryptedReq = try clientA.encryptRequestBody(plaintext, session: sessionA!)
+    let decryptedByB = try E2eeSessionManager.decrypt(
+        key: sessionB!.symmetricKey,
+        aad: Data("vibex-e2ee-req-v1".utf8),
+        base64Payload: encryptedReq
+    )
+    #expect(decryptedByB == plaintext)
+}
+
+

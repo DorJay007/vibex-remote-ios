@@ -45,7 +45,7 @@ struct SettingsView: View {
                                 systemImage: "desktopcomputer",
                                 tint: .blue
                             )
-                            Text("配对的电脑")
+                            Text("已配对的电脑")
                                 .font(.subheadline.weight(.medium))
                             Spacer(minLength: 6)
                             if let active = servers.activeProfile {
@@ -54,9 +54,21 @@ struct SettingsView: View {
                                         .fill(Color.green)
                                         .frame(width: 6.5, height: 6.5)
                                     Text(active.displayHost)
-                                        .font(.caption.monospaced())
+                                        .font(.caption)
                                         .foregroundStyle(.secondary)
                                         .lineLimit(1)
+                                    Text(active.channelBadgeText)
+                                        .font(.caption2.weight(.semibold))
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 1.5)
+                                        .background(
+                                            Capsule().fill(
+                                                active.isCloudService
+                                                    ? Color.accentColor.opacity(0.14)
+                                                    : Color.secondary.opacity(0.12)
+                                            )
+                                        )
+                                        .foregroundStyle(active.isCloudService ? Color.accentColor : .secondary)
                                 }
                             } else {
                                 Text("未连接")
@@ -301,64 +313,52 @@ struct ProfileSettingsDetailView: View {
     }
 }
 
-// MARK: - 2. 配对的电脑（已保存电脑 + 1-Tap 扫码/连接码配对）
+// MARK: - 2. 已配对的电脑（局域网 / 云服务 Beta 统一配对与诊断）
 
 struct PairedComputersSettingsView: View {
     @Environment(ServerStore.self) private var servers
-    @State private var showingScannerPair = false
-    @State private var showingManualPair = false
+    @State private var showingPairSheet = false
 
     var body: some View {
+        @Bindable var bindableServers = servers
         List {
+            Section("连接偏好") {
+                Toggle("自动连接已配对电脑", isOn: $bindableServers.autoConnect)
+            }
+
             Section("新增连接") {
                 Button {
-                    showingScannerPair = true
+                    servers.selectDiscoveryMode("lan")
+                    showingPairSheet = true
                 } label: {
                     HStack(spacing: 12) {
                         ZStack {
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
                                 .fill(Color.accentColor.opacity(0.14))
-                                .frame(width: 34, height: 34)
+                                .frame(width: 40, height: 40)
                             Image(systemName: "qrcode.viewfinder")
-                                .font(.system(size: 16, weight: .semibold))
+                                .font(.system(size: 18, weight: .semibold))
                                 .foregroundStyle(Color.accentColor)
                         }
-                        Text("扫码配对电脑")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.primary)
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .padding(.vertical, 2)
-                }
-
-                Button {
-                    showingManualPair = true
-                } label: {
-                    HStack(spacing: 12) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .fill(Color.indigo.opacity(0.14))
-                                .frame(width: 34, height: 34)
-                            Image(systemName: "keyboard")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(Color.indigo)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("配对新的电脑")
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(Color.accentColor)
+                            Text("选择局域网直连或云服务跨网配对")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
-                        Text("使用连接码配对")
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(.primary)
                         Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.tertiary)
+                        Image(systemName: "plus.circle.fill")
+                            .font(.system(size: 20))
+                            .foregroundStyle(Color.accentColor)
                     }
-                    .padding(.vertical, 2)
+                    .padding(.vertical, 3)
                 }
             }
 
-            Section("已保存的电脑 (\(servers.profiles.count))") {
+            Section("历史配对的电脑 (\(servers.profiles.count))") {
                 if servers.profiles.isEmpty {
                     ContentUnavailableView(
                         "尚未配对电脑",
@@ -375,7 +375,7 @@ struct PairedComputersSettingsView: View {
                                 ZStack {
                                     Circle()
                                         .fill(isActive ? Color.green.opacity(0.15) : Color.secondary.opacity(0.12))
-                                        .frame(width: 36, height: 36)
+                                        .frame(width: 38, height: 38)
                                     Image(systemName: isActive ? "laptopcomputer.and.iphone" : "desktopcomputer")
                                         .font(.system(size: 15, weight: .semibold))
                                         .foregroundStyle(isActive ? Color.green : Color.secondary)
@@ -385,8 +385,21 @@ struct PairedComputersSettingsView: View {
                                     HStack(spacing: 6) {
                                         Text(profile.serverName)
                                             .font(.subheadline.weight(.semibold))
+                                            .lineLimit(1)
+                                        Text(profile.channelBadgeText)
+                                            .font(.caption2.weight(.semibold))
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(
+                                                Capsule().fill(
+                                                    profile.isCloudService
+                                                        ? Color.accentColor.opacity(0.14)
+                                                        : Color.secondary.opacity(0.12)
+                                                )
+                                            )
+                                            .foregroundStyle(profile.isCloudService ? Color.accentColor : .secondary)
                                         if isActive {
-                                            Text("当前连接")
+                                            Text("已连")
                                                 .font(.caption2.weight(.semibold))
                                                 .padding(.horizontal, 6)
                                                 .padding(.vertical, 2)
@@ -396,10 +409,24 @@ struct PairedComputersSettingsView: View {
                                                 .foregroundStyle(Color.green)
                                         }
                                     }
-                                    Text("\(profile.origin) · v\(profile.serverVersion)")
-                                        .font(.caption.monospaced())
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
+
+                                    if !profile.isCloudService {
+                                        Text(profile.origin)
+                                            .font(.caption.monospaced())
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+
+                                    if isActive {
+                                        Text(activeTelemetryText)
+                                            .font(.caption.weight(.medium))
+                                            .foregroundStyle(servers.isOnline ? Color.green : Color.secondary)
+                                            .lineLimit(1)
+                                    } else {
+                                        Text("点击查看或切换连接")
+                                            .font(.caption)
+                                            .foregroundStyle(.tertiary)
+                                    }
                                 }
 
                                 Spacer()
@@ -425,14 +452,30 @@ struct PairedComputersSettingsView: View {
                 }
             }
         }
-        .navigationTitle("配对的电脑")
+        .navigationTitle("已配对的电脑")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $showingScannerPair) {
-            PairView(startWithScanner: true, initialOrigin: servers.activeProfile?.origin)
+        .task(id: servers.activeProfile?.id) {
+            await servers.refreshActiveTelemetry()
         }
-        .sheet(isPresented: $showingManualPair) {
+        .refreshable {
+            await servers.refreshActiveTelemetry()
+        }
+        .sheet(isPresented: $showingPairSheet) {
             PairView(startWithScanner: false, initialOrigin: servers.activeProfile?.origin)
         }
+    }
+
+    private var activeTelemetryText: String {
+        if servers.isOnline {
+            let e2eeSuffix = (servers.activeProfile.map {
+                E2eeSessionManager.shared.isE2eeActive(for: $0.origin)
+            } ?? false) ? " · 端到端加密" : ""
+            if let rtt = servers.realtimeRttMs {
+                return "在线 · 实时延迟 \(rtt) ms\(e2eeSuffix)"
+            }
+            return "在线 · 实时延迟测量中\(e2eeSuffix)"
+        }
+        return "状态: \(servers.connectionFailureReason ?? "电脑离线")"
     }
 }
 

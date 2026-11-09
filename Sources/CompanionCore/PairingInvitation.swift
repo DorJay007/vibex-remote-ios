@@ -39,15 +39,16 @@ public struct PairingInvitation: Decodable, Equatable, Sendable {
         return fractional.date(from: expires_at) ?? plain.date(from: expires_at)
     }
 
-    /// Published HTTPS first, then the rest in Host order; loopback never reaches a phone.
+    /// Direct LAN (`http://`) origins first, then published (`https://`) fallback; loopback never reaches a phone.
     public var candidateOrigins: [HostOrigin] {
         let parsed = reachability.compactMap { item -> (HostOrigin, Bool)? in
             guard let origin = try? HostOrigin.parse(item.origin),
                   !Self.isLoopback(origin.value)
             else { return nil }
-            return (origin, origin.value.hasPrefix("https://"))
+            let isCloudOrHttps = origin.value.lowercased().hasPrefix("https://") || item.kind.lowercased() == "published"
+            return (origin, isCloudOrHttps)
         }
-        return parsed.filter(\.1).map(\.0) + parsed.filter { !$0.1 }.map(\.0)
+        return parsed.filter { !$0.1 }.map(\.0) + parsed.filter(\.1).map(\.0)
     }
 
     private static func isLoopback(_ origin: String) -> Bool {

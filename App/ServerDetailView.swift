@@ -11,31 +11,64 @@ struct ServerDetailView: View {
         servers.activeProfile?.id == profile.id
     }
 
+    private var isCloudService: Bool {
+        profile.isCloudService
+    }
+
     var body: some View {
         List {
-            Section("连接信息") {
-                LabeledContent("状态") {
+            Section {
+                LabeledContent("当前状态") {
                     HStack(spacing: 5) {
                         Circle()
-                            .fill(isActive ? Color.green : Color.secondary.opacity(0.4))
+                            .fill(statusColor)
                             .frame(width: 7, height: 7)
-                        Text(isActive ? "当前连接" : "已保存")
-                            .foregroundStyle(isActive ? .primary : .secondary)
+                        Text(statusLabel)
+                            .foregroundStyle(statusColor)
+                            .fontWeight(.medium)
                     }
                 }
-                LabeledContent("电脑名称", value: profile.serverName)
-                LabeledContent("地址") {
-                    Text(profile.origin)
-                        .font(.footnote.monospaced())
-                        .foregroundStyle(.secondary)
+                LabeledContent("传输通道") {
+                    HStack(spacing: 6) {
+                        Text(isCloudService ? "VibeX 云服务" : "LAN 局域网直连")
+                            .foregroundStyle(isCloudService ? Color.accentColor : .secondary)
+                        if isCloudService {
+                            Text("Beta")
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(Color.accentColor.opacity(0.14)))
+                                .foregroundStyle(Color.accentColor)
+                        }
+                    }
                 }
-                LabeledContent("桌面端版本", value: "v\(profile.serverVersion)")
-                LabeledContent("通讯协议", value: "v\(profile.protocolVersion)")
-                LabeledContent("本机标识", value: profile.deviceName)
+                LabeledContent("实时延迟") {
+                    Text(latencyLabel)
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(isActive && servers.isOnline ? Color.green : .secondary)
+                }
+            } header: {
+                HStack(spacing: 6) {
+                    Text("连接诊断")
+                    if isCloudService {
+                        Text("Beta")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1.5)
+                            .background(Capsule().fill(Color.accentColor.opacity(0.14)))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                }
             }
 
             Section {
-                if !isActive {
+                if isActive {
+                    Button {
+                        Task { await servers.refreshActiveTelemetry() }
+                    } label: {
+                        Label("重新检测连接", systemImage: "arrow.clockwise")
+                    }
+                } else {
                     Button {
                         servers.setActive(profile.id)
                         dismiss()
@@ -59,6 +92,11 @@ struct ServerDetailView: View {
         }
         .navigationTitle(profile.displayHost)
         .navigationBarTitleDisplayMode(.inline)
+        .task {
+            if isActive {
+                await servers.refreshActiveTelemetry()
+            }
+        }
         .sheet(isPresented: $showingRepairSheet) {
             PairView(startWithScanner: false, initialOrigin: profile.origin)
         }
@@ -70,5 +108,23 @@ struct ServerDetailView: View {
         } message: {
             Text("移除后需重新扫码或输入连接码才能再次连接")
         }
+    }
+
+    private var statusColor: Color {
+        if !isActive { return .secondary }
+        return servers.isOnline ? .green : .orange
+    }
+
+    private var statusLabel: String {
+        if !isActive { return "已保存" }
+        if servers.isOnline { return "在线" }
+        return servers.connectionFailureReason ?? "电脑离线"
+    }
+
+    private var latencyLabel: String {
+        guard isActive, servers.isOnline, let rtt = servers.realtimeRttMs else {
+            return "—"
+        }
+        return "\(rtt) ms"
     }
 }
