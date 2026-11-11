@@ -9,6 +9,7 @@ import UserNotifications
 enum AttentionToastKind: Equatable {
     case permission(PermissionPrompt)
     case question(PendingQuestion)
+    case created
     case completed
     case failed(String)
 
@@ -16,6 +17,8 @@ enum AttentionToastKind: Equatable {
         switch self {
         case .permission, .question, .failed:
             return Color(red: 0.96, green: 0.20, blue: 0.20)
+        case .created:
+            return Color(red: 0.15, green: 0.50, blue: 0.96)
         case .completed:
             return Color(red: 0.35, green: 0.72, blue: 0.06)
         }
@@ -25,6 +28,8 @@ enum AttentionToastKind: Equatable {
         switch self {
         case .permission, .question, .failed:
             return "exclamationmark"
+        case .created:
+            return "plus"
         case .completed:
             return "checkmark"
         }
@@ -33,9 +38,11 @@ enum AttentionToastKind: Equatable {
     var durationSeconds: TimeInterval {
         switch self {
         case .permission, .question:
-            return 30
+            return 6
+        case .created:
+            return 3.5
         case .completed, .failed:
-            return 14
+            return 3.2
         }
     }
 }
@@ -55,6 +62,9 @@ struct CompanionAttentionToast: Identifiable, Equatable {
 final class CompanionAttentionCenter: NSObject, UNUserNotificationCenterDelegate {
     var activeToast: CompanionAttentionToast?
     var pendingNavigationConversation: ConversationListItem?
+    var latestConversations: [ConversationListItem] = []
+    var latestProjects: [ProjectSummary] = []
+    var latestNewlyCreatedConversation: ConversationListItem?
     var actionBusy = false
     var actionError: String?
 
@@ -64,6 +74,9 @@ final class CompanionAttentionCenter: NSObject, UNUserNotificationCenterDelegate
     @ObservationIgnored private var conversationsByID: [String: ConversationListItem] = [:]
     @ObservationIgnored private var wasRunningByConversation: [String: Bool] = [:]
     @ObservationIgnored private var initializedConversations: Set<String> = []
+    @ObservationIgnored private var didSeedKnownConversations = false
+    @ObservationIgnored private var knownConversationIDs: Set<String> = []
+    @ObservationIgnored private var locallyCreatedConversationIDs: Set<String> = []
     @ObservationIgnored private var handledEventIDs: Set<String> = []
     @ObservationIgnored private var didRequestNotificationPermission = false
     @ObservationIgnored private var currentClient: HostClient?
@@ -186,6 +199,11 @@ final class CompanionAttentionCenter: NSObject, UNUserNotificationCenterDelegate
         ) { _, _ in }
     }
 
+    func markLocallyCreatedConversation(_ id: String) {
+        locallyCreatedConversationIDs.insert(id)
+        knownConversationIDs.insert(id)
+    }
+
     func poll(client: HostClient) async {
         currentClient = client
         requestNotificationPermissionIfNeeded()
@@ -199,6 +217,10 @@ final class CompanionAttentionCenter: NSObject, UNUserNotificationCenterDelegate
         let (conversationsOpt, projectsOpt) = await (conversationsTask, projectsTask)
         guard let conversations = conversationsOpt else { return }
         let projects = projectsOpt ?? []
+        latestConversations = conversations
+        if !projects.isEmpty {
+            latestProjects = projects
+        }
         let groups = ProjectGroup.make(conversations: conversations, projects: projects)
 
         func resolveProjectName(for conv: ConversationListItem) -> String {
@@ -210,11 +232,44 @@ final class CompanionAttentionCenter: NSObject, UNUserNotificationCenterDelegate
             return "VibeX"
         }
 
+        for conv in conversations {
+            conversationsByID[conv.id] = conv
+        }
+
+        if !didSeedKnownConversations {
+            knownConversationIDs.formUnion(conversations.map(\.id))
+            didSeedKnownConversations = true
+        } else {
+            for conv in conversations where !knownConversationIDs.contains(conv.id) {
+                knownConversationIDs.insert(conv.id)
+                guard !locallyCreatedConversationIDs.contains(conv.id) else { continue }
+                latestNewlyCreatedConversation = conv
+                let project = resolveProjectName(for: conv)
+                let sessionTitle = (conv.title?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
+                    $0.isEmpty ? nil : $0
+                } ?? "新对话已就绪，点击进入"
+                let eventKey = "created:\(conv.id)"
+                if !handledEventIDs.contains(eventKey) {
+                    handledEventIDs.insert(eventKey)
+                    presentToast(
+                        CompanionAttentionToast(
+                            id: eventKey,
+                            conversation: conv,
+                            projectName: project,
+                            title: "\(project)：新会话已创建",
+                            subtitle: sessionTitle,
+                            kind: .created,
+                            createdAt: Date()
+                        )
+                    )
+                }
+            }
+        }
+
         let candidates = Array(conversations.prefix(6))
         var syncedLiveActivityInThisPoll = false
 
         for conv in candidates {
-            conversationsByID[conv.id] = conv
             let isFirstSnapshot = !initializedConversations.contains(conv.id)
             let previouslyRunning = wasRunningByConversation[conv.id] ?? false
             let seq = lastSequenceByConversation[conv.id] ?? 0
@@ -284,7 +339,7 @@ final class CompanionAttentionCenter: NSObject, UNUserNotificationCenterDelegate
                             activeToast = nil
                         }
                     }
-                case .completed, .failed:
+                case .created, .completed, .failed:
                     break
                 }
             }
@@ -427,11 +482,18 @@ final class CompanionAttentionCenter: NSObject, UNUserNotificationCenterDelegate
 
     func presentToast(_ toast: CompanionAttentionToast) {
         actionError = nil
-        withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-            activeToast = toast
-        }
         triggerFeedback(for: toast.kind)
         scheduleSystemNotification(for: toast)
+        // Use native iOS system notification banner for completed/failed events;
+        // show the interactive in-app card for permission/question prompts and new conversation reminders
+        switch toast.kind {
+        case .permission, .question, .created:
+            withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+                activeToast = toast
+            }
+        case .completed, .failed:
+            break
+        }
     }
 
     func dismiss() {
@@ -571,7 +633,7 @@ final class CompanionAttentionCenter: NSObject, UNUserNotificationCenterDelegate
         case .permission, .question:
             generator.notificationOccurred(.warning)
             AudioServicesPlaySystemSound(1007)
-        case .completed:
+        case .created, .completed:
             generator.notificationOccurred(.success)
             AudioServicesPlaySystemSound(1001)
         case .failed:
@@ -608,7 +670,7 @@ final class CompanionAttentionCenter: NSObject, UNUserNotificationCenterDelegate
         case let .question(question):
             content.categoryIdentifier = "VIBEX_QUESTION_CATEGORY"
             info["questionId"] = question.id
-        case .completed, .failed:
+        case .created, .completed, .failed:
             content.categoryIdentifier = "VIBEX_COMPLETED_CATEGORY"
         }
         content.userInfo = info
@@ -626,8 +688,8 @@ final class CompanionAttentionCenter: NSObject, UNUserNotificationCenterDelegate
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        // When app is in foreground we already show CompanionToastOverlay; only play sound/list
-        completionHandler([.list])
+        // Always present native iOS system notification banner & sound even when app is in foreground
+        completionHandler([.banner, .list, .sound])
     }
 
     nonisolated func userNotificationCenter(
@@ -745,6 +807,14 @@ struct CompanionToastOverlay: View {
                 toastCard(toast)
                     .padding(.horizontal, 12)
                     .padding(.top, 6)
+                    .gesture(
+                        DragGesture(minimumDistance: 12)
+                            .onEnded { value in
+                                if value.translation.height < -16 {
+                                    center.dismiss()
+                                }
+                            }
+                    )
                     .transition(.move(edge: .top).combined(with: .opacity))
                 Spacer(minLength: 0)
             }
@@ -844,7 +914,7 @@ struct CompanionToastOverlay: View {
                 permissionActionsRow(toast: toast, prompt: prompt)
             case let .question(question):
                 questionActionsRow(toast: toast, question: question)
-            case .completed, .failed:
+            case .created, .completed, .failed:
                 EmptyView()
             }
 

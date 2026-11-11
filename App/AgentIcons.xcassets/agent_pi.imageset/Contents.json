@@ -3,6 +3,16 @@
     {
       "filename": "pi-light.svg",
       "idiom": "universal"
+    },
+    {
+      "appearances": [
+        {
+          "appearance": "luminosity",
+          "value": "dark"
+        }
+      ],
+      "filename": "pi-dark.svg",
+      "idiom": "universal"
     }
   ],
   "info": {

@@ -3,6 +3,16 @@
     {
       "filename": "trae-light.svg",
       "idiom": "universal"
+    },
+    {
+      "appearances": [
+        {
+          "appearance": "luminosity",
+          "value": "dark"
+        }
+      ],
+      "filename": "trae-dark.svg",
+      "idiom": "universal"
     }
   ],
   "info": {

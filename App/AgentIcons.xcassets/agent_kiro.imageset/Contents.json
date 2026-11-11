@@ -3,6 +3,16 @@
     {
       "filename": "kiro-light.svg",
       "idiom": "universal"
+    },
+    {
+      "appearances": [
+        {
+          "appearance": "luminosity",
+          "value": "dark"
+        }
+      ],
+      "filename": "kiro-dark.svg",
+      "idiom": "universal"
     }
   ],
   "info": {

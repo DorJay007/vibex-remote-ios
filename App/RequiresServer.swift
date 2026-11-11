@@ -342,22 +342,29 @@ struct UnifiedServerConnectView: View {
                 VStack(spacing: 6) {
                     Text(
                         servers.discoveringHosts
-                            ? (isLan ? "正在扫描同一 Wi-Fi 下的电脑…" : "正在通过云服务搜索电脑…")
-                            : (isLan ? "当前 Wi-Fi 未发现电脑" : "未在云服务发现电脑")
+                            ? (isLan ? "正在扫描同一 Wi-Fi 下的电脑…" : "正在检测本机已配对的云端电脑…")
+                            : (isLan ? "当前 Wi-Fi 未发现电脑" : "云服务仅展示本机已配对过的电脑")
                     )
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
 
-                    if !servers.discoveringHosts && isLan {
-                        Button {
-                            localError = nil
-                            servers.selectDiscoveryMode("cloud")
-                        } label: {
-                            Text("跨网络或未扫到？点击切换至「云服务 Beta」")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(Color.accentColor)
+                    if !servers.discoveringHosts {
+                        if isLan {
+                            Button {
+                                localError = nil
+                                servers.selectDiscoveryMode("cloud")
+                            } label: {
+                                Text("跨网络或未扫到？点击切换至「云服务 Beta」")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(Color.accentColor)
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            Text("首次跨网配对请使用下方「扫码配对」或输入 8 位连接码")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.tertiary)
+                                .multilineTextAlignment(.center)
                         }
-                        .buttonStyle(.plain)
                     }
                 }
                 .frame(maxWidth: .infinity)

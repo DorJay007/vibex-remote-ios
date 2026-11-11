@@ -3,6 +3,16 @@
     {
       "filename": "zcode-light.svg",
       "idiom": "universal"
+    },
+    {
+      "appearances": [
+        {
+          "appearance": "luminosity",
+          "value": "dark"
+        }
+      ],
+      "filename": "zcode-dark.svg",
+      "idiom": "universal"
     }
   ],
   "info": {

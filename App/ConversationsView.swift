@@ -34,6 +34,8 @@ struct ConversationsView: View {
 
     // Active conversation shown in the main canvas (`nil` = New Chat Landing view)
     @State private var activeConversation: ConversationListItem?
+    @State private var didSyncInitialDesktopConversation = false
+    @State private var userRequestedNewChatLanding = false
 
     // Sidebar state
     @State private var isSidebarOpen = false
@@ -79,6 +81,10 @@ struct ConversationsView: View {
 
     private var isConnected: Bool {
         list.errorMessage == nil && list.items != nil
+    }
+
+    private var shouldHideBottomChrome: Bool {
+        isSidebarOpen || activeConversation != nil || composerMenu != nil
     }
 
     private var visibleConversations: [ConversationListItem] {
@@ -146,6 +152,7 @@ struct ConversationsView: View {
                             },
                             onReturnToLanding: {
                                 withAnimation(.smooth(duration: 0.2)) {
+                                    self.userRequestedNewChatLanding = true
                                     self.activeConversation = nil
                                 }
                             }
@@ -213,18 +220,43 @@ struct ConversationsView: View {
         }
         .onAppear {
             consumePendingNavigationIfNeeded()
-            onChromeHiddenChange?(isSidebarOpen)
+            onChromeHiddenChange?(shouldHideBottomChrome)
             if !launchLogoEntered {
                 withAnimation(.easeOut(duration: 0.36)) {
                     launchLogoEntered = true
                 }
             }
         }
-        .onChange(of: isSidebarOpen) { _, _ in
-            onChromeHiddenChange?(isSidebarOpen)
+        .onChange(of: shouldHideBottomChrome) { _, hidden in
+            onChromeHiddenChange?(hidden)
+        }
+        .onChange(of: actionErrorMessage) { _, msg in
+            guard msg != nil else { return }
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(3200))
+                if !Task.isCancelled {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        actionErrorMessage = nil
+                    }
+                }
+            }
         }
         .onChange(of: attentionCenter?.pendingNavigationConversation) { _, _ in
             consumePendingNavigationIfNeeded()
+        }
+        .onChange(of: attentionCenter?.latestConversations) { _, updated in
+            guard let updated, !updated.isEmpty else { return }
+            syncWithFetchedConversations(updated)
+        }
+        .onChange(of: attentionCenter?.latestNewlyCreatedConversation) { _, newConv in
+            guard let newConv else { return }
+            Task { await reload() }
+            if activeConversation == nil && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                userRequestedNewChatLanding = false
+                withAnimation(.smooth(duration: 0.22)) {
+                    activeConversation = newConv
+                }
+            }
         }
         .task {
             guard !isLaunchRevealed else { return }
@@ -489,6 +521,7 @@ struct ConversationsView: View {
 
                 Button {
                     withAnimation(.spring(response: 0.26, dampingFraction: 0.86)) {
+                        userRequestedNewChatLanding = true
                         activeConversation = nil
                         isSidebarOpen = false
                     }
@@ -561,6 +594,7 @@ struct ConversationsView: View {
             HStack(spacing: 4) {
                 sidebarQuickNavButton(title: "新工作台", icon: "sparkles") {
                     withAnimation(.spring(response: 0.26, dampingFraction: 0.86)) {
+                        userRequestedNewChatLanding = true
                         activeConversation = nil
                         isSidebarOpen = false
                     }
@@ -668,6 +702,7 @@ struct ConversationsView: View {
         let isCurrent = activeConversation?.id == item.id
         return Button {
             withAnimation(.spring(response: 0.26, dampingFraction: 0.86)) {
+                userRequestedNewChatLanding = false
                 activeConversation = item
                 isSidebarOpen = false
             }
@@ -894,7 +929,10 @@ struct ConversationsView: View {
     }
 
     private var landingOtherModelGroups: [PromptGroup] {
-        let currentID = currentAgent?.id
+        guard let current = currentAgent, !current.modelOptions.isEmpty else {
+            return []
+        }
+        let currentID = current.id
         return usableAgents.filter { $0.id != currentID }.map { agent in
             let modelItems = agent.modelOptions.flatMap(\.choices)
             let choices: [PromptChoice] = modelItems.isEmpty
@@ -956,36 +994,36 @@ struct ConversationsView: View {
         return [
             PromptChoice(
                 id: "manual",
-                title: "Manual",
-                detail: "Always ask before making changes",
+                title: "手动审批",
+                detail: "每次修改前询问确认",
                 icon: "shield",
                 selected: activeID == "manual"
             ),
             PromptChoice(
                 id: "accept_edits",
-                title: "Accept edits",
-                detail: "Automatically accept all file edits",
+                title: "自动接受编辑",
+                detail: "自动接受所有文件编辑",
                 icon: "shield",
                 selected: activeID == "accept_edits"
             ),
             PromptChoice(
                 id: "plan",
-                title: "Plan",
-                detail: "Create a plan before making changes",
+                title: "仅规划",
+                detail: "执行前先生成规划方案",
                 icon: "shield",
                 selected: activeID == "plan"
             ),
             PromptChoice(
                 id: "auto",
-                title: "Auto",
-                detail: "Agent handles permission decisions",
+                title: "自动",
+                detail: "由 Agent 自动处理权限判断",
                 icon: "shield",
                 selected: activeID == "auto"
             ),
             PromptChoice(
                 id: "bypass",
-                title: "Bypass permissions",
-                detail: "Accepts all permissions",
+                title: "跳过权限",
+                detail: "自动通过所有权限请求",
                 icon: "shield",
                 selected: activeID == "bypass"
             ),
@@ -1006,7 +1044,7 @@ struct ConversationsView: View {
             let idx = min(max(selectedEffortIndex ?? defaultIdx, 0), option.choices.count - 1)
             return PromptEffort(levels: option.choices.map(\.label), index: idx)
         }
-        let levels = ["Low", "Medium", "High"]
+        let levels = ["低", "中", "高"]
         let idx = min(max(selectedEffortIndex ?? 1, 0), levels.count - 1)
         return PromptEffort(levels: levels, index: idx)
     }
@@ -1084,6 +1122,7 @@ struct ConversationsView: View {
                     workspaceID: workspaceID,
                     agentID: agentID
                 )
+                attentionCenter?.markLocallyCreatedConversation(created.id)
                 try await client.sendMessage(
                     conversationID: created.id,
                     workspaceID: workspaceID,
@@ -1091,6 +1130,7 @@ struct ConversationsView: View {
                     text: trimmed
                 )
                 draft = ""
+                userRequestedNewChatLanding = false
                 withAnimation(.smooth(duration: 0.22)) {
                     activeConversation = created
                 }
@@ -1160,8 +1200,22 @@ struct ConversationsView: View {
         guard let target = attentionCenter?.pendingNavigationConversation else { return }
         attentionCenter?.pendingNavigationConversation = nil
         isSidebarOpen = false
+        userRequestedNewChatLanding = false
         withAnimation(.smooth(duration: 0.2)) {
             activeConversation = target
+        }
+    }
+
+    private func syncWithFetchedConversations(_ fetched: [ConversationListItem]) {
+        if let current = activeConversation,
+           let updated = fetched.first(where: { $0.id == current.id }) {
+            activeConversation = updated
+        } else if !didSyncInitialDesktopConversation && !userRequestedNewChatLanding,
+                  let initial = fetched.first(where: { !removedConversationIDs.contains($0.id) }) {
+            didSyncInitialDesktopConversation = true
+            withAnimation(.smooth(duration: 0.22)) {
+                activeConversation = initial
+            }
         }
     }
 
@@ -1220,10 +1274,7 @@ struct ConversationsView: View {
             )
             let activeIDs = Set(fetched.map(\.id))
             removedConversationIDs.formIntersection(activeIDs)
-            if let current = activeConversation,
-               let updated = fetched.first(where: { $0.id == current.id }) {
-                activeConversation = updated
-            }
+            syncWithFetchedConversations(fetched)
             return fetched
         }
     }

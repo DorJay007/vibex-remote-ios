@@ -10,7 +10,8 @@ enum AgentBrand {
               !raw.isEmpty else { return nil }
         let key = raw.lowercased().replacingOccurrences(of: "-", with: "_")
         switch key {
-        case "gemini": return "antigravity"
+        case "antigravity", "antigravity_acp", "google_antigravity": return "antigravity"
+        case "gemini", "gemini_cli", "google_gemini_cli": return "gemini"
         case "claude": return "claude_code"
         case "kimi": return "kimi_code"
         case "deepseek", "dsh": return "deepseek_harness"
@@ -20,6 +21,7 @@ enum AgentBrand {
         case "commandcode", "cmdc": return "command_code"
         case "oh_my_pi", "ohmypi": return "omp"
         case "mimo", "mimocode": return "mimo_code"
+        case "grok_cli": return "grok"
         default: return key
         }
     }
@@ -28,6 +30,7 @@ enum AgentBrand {
         "claude_code": "Claude Code",
         "codex": "Codex",
         "antigravity": "Google Antigravity",
+        "gemini": "Gemini CLI",
         "openclaw": "OpenClaw",
         "opencode": "OpenCode",
         "cline": "Cline",

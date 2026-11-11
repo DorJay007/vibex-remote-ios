@@ -3,6 +3,16 @@
     {
       "filename": "antigravity-light.svg",
       "idiom": "universal"
+    },
+    {
+      "appearances": [
+        {
+          "appearance": "luminosity",
+          "value": "dark"
+        }
+      ],
+      "filename": "antigravity-dark.svg",
+      "idiom": "universal"
     }
   ],
   "info": {

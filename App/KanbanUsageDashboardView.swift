@@ -5,6 +5,7 @@ struct KanbanUsageDashboardView: View {
     let client: HostClient
     let projects: [ProjectSummary]
     let initialProjectID: String?
+    var refreshTrigger: Int = 0
 
     @State private var selectedTarget: String = "global"
     @State private var dateRange: UsageDateRange = .sevenDays
@@ -73,8 +74,6 @@ struct KanbanUsageDashboardView: View {
         VStack(spacing: 0) {
             filterHeader
             Divider()
-            subTabBar
-            Divider()
 
             if activeTab == .plan {
                 planTabContent
@@ -107,6 +106,7 @@ struct KanbanUsageDashboardView: View {
                         }
                     }
                     .padding(16)
+                    .padding(.bottom, 76)
                 }
                 .refreshable {
                     await reloadStatistics()
@@ -125,6 +125,15 @@ struct KanbanUsageDashboardView: View {
                 await loadPlanUsage(for: selectedPlanAgent.id)
             }
         }
+        .onChange(of: refreshTrigger) { _, _ in
+            Task {
+                if activeTab == .plan {
+                    await loadPlanUsage(for: selectedPlanAgent.id, force: true)
+                } else {
+                    await reloadStatistics()
+                }
+            }
+        }
         .onAppear {
             if let initialProjectID, !initialProjectID.isEmpty, selectedTarget == "global" {
                 selectedTarget = "project:\(initialProjectID)"
@@ -132,10 +141,48 @@ struct KanbanUsageDashboardView: View {
         }
     }
 
-    // MARK: - Header Controls
+    // MARK: - Unified Single Filter Row (Row 2)
 
     private var filterHeader: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 6) {
+            // 1. Unified Dimension Dropdown (概览 / 项目 / Agent / 模型 / 会话 / 套餐)
+            Menu {
+                ForEach(UsageDashboardTab.allCases) { tab in
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            activeTab = tab
+                        }
+                    } label: {
+                        HStack {
+                            Label(tab.label, systemImage: tab.icon)
+                            if activeTab == tab {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: activeTab.icon)
+                        .font(.caption)
+                        .foregroundStyle(Color.accentColor)
+                    Text(activeTab.label)
+                        .font(.subheadline.weight(.medium))
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color(.secondarySystemGroupedBackground), in: Capsule())
+                .overlay(
+                    Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+                )
+            }
+            .buttonStyle(.plain)
+
+            // 2. Scope Dropdown (全局 / 指定项目) right next to Dimension Dropdown
             Menu {
                 Button {
                     selectedTarget = "global"
@@ -160,6 +207,7 @@ struct KanbanUsageDashboardView: View {
                 HStack(spacing: 5) {
                     Image(systemName: selectedTarget == "global" ? "globe" : "folder")
                         .font(.caption)
+                        .foregroundStyle(.secondary)
                     Text(selectedTargetLabel)
                         .font(.subheadline.weight(.medium))
                         .lineLimit(1)
@@ -170,10 +218,13 @@ struct KanbanUsageDashboardView: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 .background(Color(.secondarySystemGroupedBackground), in: Capsule())
+                .overlay(
+                    Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+                )
             }
             .buttonStyle(.plain)
 
-            Spacer()
+            Spacer(minLength: 6)
 
             if activeTab != .plan {
                 Picker("时间范围", selection: $dateRange) {
@@ -182,27 +233,11 @@ struct KanbanUsageDashboardView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 156)
+                .frame(width: 148)
             }
-
-            Button {
-                Task {
-                    if activeTab == .plan {
-                        await loadPlanUsage(for: selectedPlanAgent.id, force: true)
-                    } else {
-                        await reloadStatistics()
-                    }
-                }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.subheadline.weight(.medium))
-                    .frame(width: 30, height: 30)
-                    .background(Color(.secondarySystemGroupedBackground), in: Circle())
-            }
-            .buttonStyle(.plain)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
         .background(Color(.systemGroupedBackground))
     }
 
@@ -210,39 +245,6 @@ struct KanbanUsageDashboardView: View {
         if selectedTarget == "global" { return "全局" }
         let id = selectedTarget.replacingOccurrences(of: "project:", with: "")
         return projects.first { $0.id.lowercased() == id.lowercased() }?.displayName ?? "当前项目"
-    }
-
-    private var subTabBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(UsageDashboardTab.allCases) { tab in
-                    let isSelected = activeTab == tab
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.18)) {
-                            activeTab = tab
-                        }
-                    } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: tab.icon)
-                                .font(.caption)
-                            Text(tab.label)
-                                .font(.footnote.weight(isSelected ? .semibold : .medium))
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 7)
-                        .foregroundStyle(isSelected ? Color.white : Color.primary)
-                        .background(
-                            isSelected ? Color.accentColor : Color(.secondarySystemGroupedBackground),
-                            in: Capsule()
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-        }
-        .background(Color(.systemGroupedBackground))
     }
 
     // MARK: - Overview Tab

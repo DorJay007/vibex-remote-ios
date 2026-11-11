@@ -3,6 +3,16 @@
     {
       "filename": "auggie-light.svg",
       "idiom": "universal"
+    },
+    {
+      "appearances": [
+        {
+          "appearance": "luminosity",
+          "value": "dark"
+        }
+      ],
+      "filename": "auggie-dark.svg",
+      "idiom": "universal"
     }
   ],
   "info": {

@@ -3,6 +3,16 @@
     {
       "filename": "cline-light.svg",
       "idiom": "universal"
+    },
+    {
+      "appearances": [
+        {
+          "appearance": "luminosity",
+          "value": "dark"
+        }
+      ],
+      "filename": "cline-dark.svg",
+      "idiom": "universal"
     }
   ],
   "info": {

@@ -3,6 +3,16 @@
     {
       "filename": "codebuddy-light.svg",
       "idiom": "universal"
+    },
+    {
+      "appearances": [
+        {
+          "appearance": "luminosity",
+          "value": "dark"
+        }
+      ],
+      "filename": "codebuddy-dark.svg",
+      "idiom": "universal"
     }
   ],
   "info": {

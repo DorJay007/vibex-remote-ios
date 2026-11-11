@@ -3,6 +3,16 @@
     {
       "filename": "grok-light.svg",
       "idiom": "universal"
+    },
+    {
+      "appearances": [
+        {
+          "appearance": "luminosity",
+          "value": "dark"
+        }
+      ],
+      "filename": "grok-dark.svg",
+      "idiom": "universal"
     }
   ],
   "info": {

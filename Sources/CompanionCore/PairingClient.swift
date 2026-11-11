@@ -202,7 +202,7 @@ public struct PairingClient: Sendable {
                 return trimmed
             }
         }
-        return ""
+        return "https://vibex.xforever.xin"
     }
 
     private let transport: HttpTransport
@@ -532,11 +532,6 @@ public struct PairingClient: Sendable {
             addCandidate("http://127.0.0.1:\(localPort)")
         }
 
-        // Also include direct LAN origins advertised by same-exit hosts (supports /16 and /20 Wi-Fi subnets like 172.24.x.x)
-        for lanOrigin in await discoverSameExitLanOrigins(extraRelayOrigins: extraRelayOrigins) {
-            addCandidate(lanOrigin)
-        }
-
         let lanPorts = port == 17899 ? [17899] : [port, 17899]
         for (prefix, selfHost) in localPrivateIPv4Subnets() {
             for lanPort in lanPorts {
@@ -583,140 +578,82 @@ public struct PairingClient: Sendable {
         extraRelayOrigins: [String] = [],
         timeoutSeconds: TimeInterval = 2.0
     ) async -> [DiscoveredLanHost] {
-        let bases = knownRelayBases(extraOrigins: extraRelayOrigins)
-        guard !bases.isEmpty else { return [] }
-
-        struct SameNetResponse: Decodable {
-            struct HostItem: Decodable {
-                let host_id: String?
-                let name: String?
-                let relay_path: String?
-                let lan_origins: [String]?
-            }
-            let hosts: [HostItem]?
-        }
-
-        struct CloudBeaconResponse: Decodable {
-            struct Entry: Decodable {
-                struct Payload: Decodable {
-                    let host_id: String?
-                    let name: String?
-                    let origin: String?
-                    let ts: Int64?
-                }
-                let payload: Payload?
-                let ts: Int64?
-            }
-            let entries: [Entry]?
-        }
-
+        // Cloud discovery strictly probes only the user's own known/paired origins.
+        // Never query global or shared-subnet unauthenticated host lists.
         var results: [DiscoveredLanHost] = []
-        for base in bases {
-            var cleanBase = base
-            while cleanBase.hasSuffix("/") { cleanBase.removeLast() }
-            if let url = URL(string: "\(cleanBase)/v1/discover/same-net") {
-                var request = URLRequest(url: url, timeoutInterval: timeoutSeconds)
-                request.httpMethod = "GET"
-                if let (data, response) = try? await URLSession.shared.data(for: request),
-                   let http = response as? HTTPURLResponse,
-                   (200...299).contains(http.statusCode),
-                   let decoded = try? JSONDecoder().decode(SameNetResponse.self, from: data)
-                {
-                    for item in decoded.hosts ?? [] {
-                        guard let hostId = item.host_id, !hostId.isEmpty else { continue }
-                        let name = item.name ?? "VibeX 桌面端"
-                        let relayPath = item.relay_path ?? "/t/\(hostId)"
-                        results.append(
-                            DiscoveredLanHost(
-                                origin: "\(cleanBase)\(relayPath)",
-                                hostId: hostId,
-                                name: name
-                            )
-                        )
-                    }
-                }
-            }
-
-            if let beaconUrl = URL(string: "\(cleanBase)/v1/beacon/vbx-cloud-hosts-v1") {
-                var beaconReq = URLRequest(url: beaconUrl, timeoutInterval: timeoutSeconds)
-                beaconReq.httpMethod = "GET"
-                if let (data, response) = try? await URLSession.shared.data(for: beaconReq),
-                   let http = response as? HTTPURLResponse,
-                   (200...299).contains(http.statusCode),
-                   let decoded = try? JSONDecoder().decode(CloudBeaconResponse.self, from: data)
-                {
-                    let nowTs = Int64(Date().timeIntervalSince1970)
-                    var seenBeaconHostIds = Set(results.compactMap(\.hostId))
-                    for entry in (decoded.entries ?? []).reversed() {
-                        guard let payload = entry.payload,
-                              let hostId = payload.host_id?.trimmingCharacters(in: .whitespacesAndNewlines),
-                              !hostId.isEmpty,
-                              seenBeaconHostIds.insert(hostId).inserted
-                        else { continue }
-                        let entryTs = entry.ts ?? payload.ts ?? nowTs
-                        if nowTs - entryTs > 1200 { continue }
-                        let candidateOrigin = payload.origin?.trimmingCharacters(in: .whitespacesAndNewlines)
-                            ?? "\(cleanBase)/t/\(hostId)"
-                        if let verified = await probeHostHealth(
-                            originUrl: candidateOrigin,
-                            timeoutSeconds: 2.0,
-                            expectedHostId: hostId
-                        ) {
-                            results.append(verified.host)
-                        }
-                    }
-                }
-            }
-        }
-
-        for extra in extraRelayOrigins where extra.contains("/t/") {
+        for extra in extraRelayOrigins where extra.contains("/t/") || extra.lowercased().hasPrefix("https://") {
             if !results.contains(where: { $0.origin == extra }) {
-                if let verified = await probeHostHealth(originUrl: extra, timeoutSeconds: 1.8) {
+                if let verified = await probeHostHealth(originUrl: extra, timeoutSeconds: timeoutSeconds) {
                     results.append(verified.host)
                 }
             }
         }
-
         return deduplicateHosts(results)
     }
 
-    private static func discoverSameExitLanOrigins(
-        extraRelayOrigins: [String] = [],
-        timeoutSeconds: TimeInterval = 1.2
+    public static func resolvePairingCodeRendezvous(
+        connectionCode: String,
+        knownOrigins: [String] = [],
+        timeoutSeconds: TimeInterval = 2.0
     ) async -> [String] {
-        let bases = knownRelayBases(extraOrigins: extraRelayOrigins)
+        let cleanCode = connectionCode
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: " ", with: "")
+            .uppercased()
+        guard cleanCode.count == 8 else { return [] }
+        let bases = knownRelayBases(extraOrigins: knownOrigins)
         guard !bases.isEmpty else { return [] }
 
-        struct SameNetResponse: Decodable {
-            struct HostItem: Decodable {
-                let lan_origins: [String]?
+        let digest = SHA256.hash(data: Data("vibex-pair-code-v1:\(cleanCode)".utf8))
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        let topic = "vbx-p-\(hex.prefix(32))"
+
+        struct BeaconResponse: Decodable {
+            struct Entry: Decodable {
+                struct Payload: Decodable {
+                    let host_id: String?
+                    let origin: String?
+                }
+                let payload: Payload?
             }
-            let hosts: [HostItem]?
+            let entries: [Entry]?
         }
 
-        var origins: [String] = []
+        var resolved: [String] = []
+        func appendUnique(_ origin: String) {
+            if !resolved.contains(origin) {
+                resolved.append(origin)
+            }
+        }
+
         for base in bases {
             var cleanBase = base
             while cleanBase.hasSuffix("/") { cleanBase.removeLast() }
-            guard let url = URL(string: "\(cleanBase)/v1/discover/same-net") else { continue }
+            guard let url = URL(string: "\(cleanBase)/v1/beacon/\(topic)") else { continue }
             var request = URLRequest(url: url, timeoutInterval: timeoutSeconds)
             request.httpMethod = "GET"
             guard let (data, response) = try? await URLSession.shared.data(for: request),
                   let http = response as? HTTPURLResponse,
                   (200...299).contains(http.statusCode),
-                  let decoded = try? JSONDecoder().decode(SameNetResponse.self, from: data)
+                  let decoded = try? JSONDecoder().decode(BeaconResponse.self, from: data)
             else { continue }
 
-            for item in decoded.hosts ?? [] {
-                for raw in item.lan_origins ?? [] {
-                    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if trimmed.lowercased().hasPrefix("http://"), !origins.contains(trimmed) {
-                        origins.append(trimmed)
-                    }
+            for entry in decoded.entries ?? [] {
+                guard let payload = entry.payload else { continue }
+                if let origin = payload.origin?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   origin.hasPrefix("http://") || origin.hasPrefix("https://")
+                {
+                    appendUnique(origin)
+                }
+                if let hostId = payload.host_id?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !hostId.isEmpty
+                {
+                    appendUnique("\(cleanBase)/t/\(hostId)")
                 }
             }
         }
-        return origins
+        return resolved
     }
 
     public static func resolveHostRendezvous(

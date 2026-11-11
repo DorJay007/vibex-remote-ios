@@ -3,6 +3,16 @@
     {
       "filename": "qoder-light.svg",
       "idiom": "universal"
+    },
+    {
+      "appearances": [
+        {
+          "appearance": "luminosity",
+          "value": "dark"
+        }
+      ],
+      "filename": "qoder-dark.svg",
+      "idiom": "universal"
     }
   ],
   "info": {

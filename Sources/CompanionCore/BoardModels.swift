@@ -4,7 +4,6 @@ import Foundation
 
 public enum KanbanViewMode: String, CaseIterable, Identifiable, Sendable {
     case columns
-    case sessionHub
     case usage
 
     public var id: String { rawValue }
@@ -12,7 +11,6 @@ public enum KanbanViewMode: String, CaseIterable, Identifiable, Sendable {
     public var title: String {
         switch self {
         case .columns: return "四栏看板"
-        case .sessionHub: return "会话中心"
         case .usage: return "计量统计"
         }
     }
@@ -20,7 +18,6 @@ public enum KanbanViewMode: String, CaseIterable, Identifiable, Sendable {
     public var icon: String {
         switch self {
         case .columns: return "rectangle.split.3x1"
-        case .sessionHub: return "list.bullet.rectangle.portrait"
         case .usage: return "chart.bar.xaxis"
         }
     }
@@ -327,18 +324,30 @@ public struct KanbanSessionSummary: Decodable, Identifiable, Equatable, Hashable
         guard let key = rawKey?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty else {
             return "未设置代理"
         }
-        switch key.lowercased() {
-        case "claude_code", "claude-code", "claude": return "Claude Code"
+        switch key.lowercased().replacingOccurrences(of: "-", with: "_") {
+        case "claude_code", "claude": return "Claude Code"
         case "codex": return "Codex"
-        case "gemini", "gemini_cli", "gemini-cli": return "Gemini"
+        case "antigravity", "antigravity_acp", "google_antigravity": return "Google Antigravity"
+        case "gemini", "gemini_cli", "google_gemini_cli": return "Gemini CLI"
         case "cursor", "cursor_agent": return "Cursor"
         case "grok", "grok_cli": return "Grok"
         case "opencode", "open_code": return "OpenCode"
-        case "kimi", "kimi_code", "kimi-code": return "Kimi"
-        case "antigravity": return "Antigravity"
-        case "deepseek_harness", "deepseek-harness", "deepseek": return "DeepSeek"
+        case "openclaw": return "OpenClaw"
+        case "cline": return "Cline"
+        case "hermes": return "Hermes Agent"
+        case "codebuddy": return "CodeBuddy"
+        case "kimi", "kimi_code": return "Kimi Code"
+        case "deepseek_harness", "deepseek", "dsh": return "DeepSeek Harness"
         case "pi": return "Pi"
-        case "qwen", "qwen_code": return "Qwen"
+        case "qoder", "qodercli": return "Qoder"
+        case "kiro", "kiro_cli", "kirocli": return "Kiro CLI"
+        case "auggie": return "Auggie"
+        case "trae", "trae_cli", "traecli", "traex": return "TRAE CLI"
+        case "command_code", "commandcode", "cmdc": return "Command Code"
+        case "zcode": return "ZCode"
+        case "omp", "oh_my_pi", "ohmypi": return "OMP"
+        case "mimo_code", "mimo", "mimocode": return "MiMo Code"
+        case "qwen", "qwen_code": return "Qwen Code"
         default: return key
         }
     }

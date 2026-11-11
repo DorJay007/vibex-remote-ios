@@ -787,7 +787,7 @@ private struct DrawerChoiceList: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 8)
                         .padding(.top, 8)
-                        ForEach(group.choices) { row in MenuRow(row: row) {} }
+                        ForEach(group.choices) { row in MenuRow(row: row) { select(row.id) } }
                     }
                     if let footnote {
                         Text(footnote)
@@ -838,7 +838,7 @@ private struct MenuList: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 8)
                             .padding(.top, 8)
-                            ForEach(group.choices) { row in MenuRow(row: row) {} }
+                            ForEach(group.choices) { row in MenuRow(row: row) { select(row.id) } }
                         }
                         if let footnote {
                             Text(footnote)

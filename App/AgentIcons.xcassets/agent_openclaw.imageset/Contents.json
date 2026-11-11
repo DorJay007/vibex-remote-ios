@@ -3,6 +3,16 @@
     {
       "filename": "openclaw-light.svg",
       "idiom": "universal"
+    },
+    {
+      "appearances": [
+        {
+          "appearance": "luminosity",
+          "value": "dark"
+        }
+      ],
+      "filename": "openclaw-dark.svg",
+      "idiom": "universal"
     }
   ],
   "info": {

@@ -3,6 +3,16 @@
     {
       "filename": "kimi_code-light.svg",
       "idiom": "universal"
+    },
+    {
+      "appearances": [
+        {
+          "appearance": "luminosity",
+          "value": "dark"
+        }
+      ],
+      "filename": "kimi_code-dark.svg",
+      "idiom": "universal"
     }
   ],
   "info": {

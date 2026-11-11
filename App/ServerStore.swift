@@ -166,7 +166,16 @@ final class ServerStore {
         preferredDiscoveryMode = mode
         discoverTask?.cancel()
         discoveringHosts = true
-        let extraOrigins = profiles.map(\.origin)
+        var extraOrigins = profiles.map(\.origin)
+        let relayBase = PairingClient.defaultOfficialRelayBase
+        for profile in profiles {
+            if let hid = profile.hostId, !hid.isEmpty, !hid.hasPrefix("host:"), !relayBase.isEmpty {
+                let tenantUrl = "\(relayBase)/t/\(hid)"
+                if !extraOrigins.contains(tenantUrl) {
+                    extraOrigins.append(tenantUrl)
+                }
+            }
+        }
         let useCloud = (mode == "cloud")
         discoverTask = Task { @MainActor in
             let found = await PairingClient.discoverLanHosts(
@@ -369,12 +378,19 @@ final class ServerStore {
                         }
                     }
                 }
+                let codeRendezvous = await PairingClient.resolvePairingCodeRendezvous(
+                    connectionCode: trimmedInput,
+                    knownOrigins: profiles.map(\.origin)
+                )
+                for origin in codeRendezvous {
+                    appendCandidate(origin)
+                }
                 let hasCloudCandidate = candidateUrls.contains { $0.contains("/t/") || $0.lowercased().hasPrefix("https://") }
                 if candidateUrls.isEmpty || !hasCloudCandidate {
                     let autoFound = await PairingClient.discoverLanHosts(
                         extraRelayOrigins: profiles.map(\.origin),
-                        includeCloudRelay: true,
-                        cloudOnly: !candidateUrls.isEmpty
+                        includeCloudRelay: false,
+                        cloudOnly: false
                     )
                     if self.discoveredHosts.isEmpty {
                         self.discoveredHosts = autoFound

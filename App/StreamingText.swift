@@ -1542,9 +1542,10 @@ private struct MarkdownBlockView: View {
     }
 
     /// Parses inline Markdown (`**bold**`, `*italic*`, `` `code` ``, `[label](url)`, `$math$`)
-    /// and styles inline code & file references to match `AstryxMarkdown.tsx` + `conv-markdown.css`.
+    /// and styles inline code & file references to match `AstryxMarkdown.tsx` + `MarkdownResourceLink.tsx`.
     static func inlineAttributed(_ raw: String, appendCursor: Bool = false) -> AttributedString {
-        let normalized = raw.replacingOccurrences(of: #"\$([^$\n]+)\$"#, with: "`$1`", options: .regularExpression)
+        let withMath = raw.replacingOccurrences(of: #"\$([^$\n]+)\$"#, with: "`$1`", options: .regularExpression)
+        let normalized = decorateResourceChips(in: withMath)
         let options = AttributedString.MarkdownParsingOptions(
             interpretedSyntax: .inlineOnlyPreservingWhitespace
         )
@@ -1554,14 +1555,23 @@ private struct MarkdownBlockView: View {
                 let textSlice = String(attributed[run.range].characters)
                 attributed[run.range].font = .system(size: 13, weight: .medium, design: .monospaced)
                 if looksLikeWorkspaceResource(textSlice) {
-                    attributed[run.range].foregroundColor = .accentColor
-                    attributed[run.range].backgroundColor = Color.accentColor.opacity(0.10)
+                    attributed[run.range].foregroundColor = .primary
+                    attributed[run.range].backgroundColor = Color.primary.opacity(0.09)
                 } else {
                     attributed[run.range].backgroundColor = Color.primary.opacity(0.07)
                 }
-            } else if run.link != nil {
-                attributed[run.range].foregroundColor = .accentColor
-                attributed[run.range].underlineStyle = .single
+            } else if let link = run.link {
+                let labelSlice = String(attributed[run.range].characters)
+                let hrefString = link.absoluteString
+                if looksLikeWorkspaceResource(labelSlice) || looksLikeWorkspaceResource(hrefString) {
+                    attributed[run.range].font = .system(size: 13, weight: .semibold)
+                    attributed[run.range].foregroundColor = .primary
+                    attributed[run.range].backgroundColor = Color.primary.opacity(0.09)
+                    attributed[run.range].underlineStyle = .none
+                } else {
+                    attributed[run.range].foregroundColor = .accentColor
+                    attributed[run.range].underlineStyle = .single
+                }
             }
         }
         if appendCursor {
@@ -1573,14 +1583,74 @@ private struct MarkdownBlockView: View {
         return attributed
     }
 
-    private static func looksLikeWorkspaceResource(_ candidate: String) -> Bool {
-        let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !trimmed.contains(" ") else { return false }
-        if trimmed.hasPrefix("/") || trimmed.hasPrefix("./") || trimmed.contains("/") {
-            return trimmed.contains(".")
+    private static func decorateResourceChips(in input: String) -> String {
+        var result = input
+        // Enrich Markdown links `[label](href)` that point to README, markdown/ADR docs, or folders
+        if let regex = try? NSRegularExpression(pattern: #"\[([^\]\n]+)\]\(([^)\n]*)\)"#) {
+            let ns = result as NSString
+            let matches = regex.matches(in: result, range: NSRange(location: 0, length: ns.length))
+            for match in matches.reversed() {
+                let label = ns.substring(with: match.range(at: 1))
+                let href = ns.substring(with: match.range(at: 2))
+                guard let badge = resourceBadgePrefix(label: label, href: href),
+                      !label.hasPrefix(badge)
+                else { continue }
+                let safeHref = href.isEmpty ? "#" : href
+                let replacement = "[\(badge)\(label)](\(safeHref))"
+                result = (result as NSString).replacingCharacters(in: match.range, with: replacement)
+            }
         }
-        let exts = [".swift", ".ts", ".tsx", ".rs", ".js", ".jsx", ".json", ".md", ".css", ".py", ".go", ".toml", ".yaml", ".yml", ".html"]
-        return exts.contains { trimmed.lowercased().hasSuffix($0) }
+        // Enrich inline code `` `path` `` for folders & docs (`frontend/src/`, `README.md`, `CONTEXT.md`, `ADR-0045`)
+        if let codeRegex = try? NSRegularExpression(pattern: #"`([^`\n]+)`"#) {
+            let ns = result as NSString
+            let matches = codeRegex.matches(in: result, range: NSRange(location: 0, length: ns.length))
+            for match in matches.reversed() {
+                let inner = ns.substring(with: match.range(at: 1))
+                guard let badge = resourceBadgePrefix(label: inner, href: inner),
+                      !inner.hasPrefix(badge)
+                else { continue }
+                let replacement = "`\(badge)\(inner)`"
+                result = (result as NSString).replacingCharacters(in: match.range, with: replacement)
+            }
+        }
+        return result
+    }
+
+    private static func resourceBadgePrefix(label: String, href: String) -> String? {
+        let cleanLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let upper = cleanLabel.uppercased()
+        let lowerHref = href.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if upper == "README" || upper.hasPrefix("README.") || lowerHref.hasSuffix("/readme.md") || lowerHref == "readme.md" {
+            return "ⓘ "
+        }
+        if upper.range(of: #"^ADR-\d+$"#, options: .regularExpression) != nil
+            || cleanLabel.lowercased().hasSuffix(".md")
+            || lowerHref.hasSuffix(".md")
+        {
+            return "M↓ "
+        }
+        if cleanLabel.hasSuffix("/") && !cleanLabel.contains(" ") && cleanLabel.count > 2 {
+            return "📁 "
+        }
+        return nil
+    }
+
+    private static func looksLikeWorkspaceResource(_ candidate: String) -> Bool {
+        let stripped = candidate
+            .replacingOccurrences(of: "ⓘ ", with: "")
+            .replacingOccurrences(of: "M↓ ", with: "")
+            .replacingOccurrences(of: "📁 ", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !stripped.isEmpty, !stripped.contains(" ") else { return false }
+        let upper = stripped.uppercased()
+        if upper == "README" || upper.range(of: #"^ADR-\d+$"#, options: .regularExpression) != nil {
+            return true
+        }
+        if stripped.hasSuffix("/") || stripped.hasPrefix("/") || stripped.hasPrefix("./") || stripped.contains("/") {
+            return true
+        }
+        let exts = [".swift", ".ts", ".tsx", ".rs", ".kt", ".js", ".jsx", ".json", ".md", ".css", ".py", ".go", ".toml", ".yaml", ".yml", ".html"]
+        return exts.contains { stripped.lowercased().hasSuffix($0) }
     }
 }
 
