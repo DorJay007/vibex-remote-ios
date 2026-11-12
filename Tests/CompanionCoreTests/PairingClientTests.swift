@@ -237,3 +237,68 @@ private final class FlakyTransport: HttpTransport, @unchecked Sendable {
 }
 
 
+
+private let pendingConnectJSON = "{\"request_id\":\"req-1\",\"host_id\":\"h1\",\"sas_code\":\"1234\",\"status\":\"pending\"}"
+
+@Test func requestConnectSendsAccountTokenOnlyWhenPresent() async throws {
+    let transport = ScriptedTransport([pendingConnectJSON, pendingConnectJSON, pendingConnectJSON], statuses: [201, 201, 201])
+    let client = PairingClient(transport: transport)
+    let origin = try HostOrigin.parse("https://relay.example.com/t/h1")
+
+    _ = try await client.requestConnect(origin: origin, deviceName: "iPhone", accountToken: "acct-token")
+    _ = try await client.requestConnect(origin: origin, deviceName: "iPhone")
+    _ = try await client.requestConnect(origin: origin, deviceName: "iPhone", accountToken: "  ")
+
+    func sentBody(_ index: Int) throws -> [String: Any] {
+        let data = try #require(transport.requests[index].body)
+        return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+    let withToken = try sentBody(0)
+    #expect(withToken["account_token"] as? String == "acct-token")
+    #expect(withToken["client_kind"] as? String == "mobile")
+    #expect(withToken["replace_existing_mobile"] as? Bool == false)
+    #expect(try sentBody(1)["account_token"] == nil)
+    #expect(try sentBody(2)["account_token"] == nil)
+}
+
+@Test func requestConnectMapsAccountVerificationFailures() async throws {
+    func body(_ reason: String, extra: String = "") -> String {
+        "{\"code\":\"x\",\"message\":\"x\",\"retryable\":false,\"operation_id\":\"o\",\"details\":{\"reason\":\"\(reason)\"\(extra)}}"
+    }
+    let cases: [(String, Int, PairingError)] = [
+        (body("account_mismatch"), 403, .accountMismatch),
+        (body("account_token_invalid"), 401, .accountTokenInvalid),
+        (body("host_account_signed_out"), 409, .hostAccountSignedOut),
+        (body("account_verification_unavailable"), 503, .accountVerificationUnavailable),
+        (body("mobile_device_conflict", extra: ",\"existing_device_name\":\"Old iPhone\""), 409, .mobileDeviceConflict(existingDeviceName: "Old iPhone")),
+    ]
+    for (payload, status, expected) in cases {
+        let transport = ScriptedTransport([payload], statuses: [status])
+        await #expect(throws: expected) {
+            try await PairingClient(transport: transport).requestConnect(
+                origin: HostOrigin.parse("http://192.168.1.2:17891"),
+                accountToken: "acct-token"
+            )
+        }
+    }
+}
+
+@Test func awaitConnectApprovalReportsDesktopDecision() async throws {
+    let origin = try HostOrigin.parse("http://192.168.1.2:17891")
+    func poll(_ status: String) -> String {
+        "{\"request_id\":\"req-1\",\"host_id\":\"h1\",\"sas_code\":\"1234\",\"status\":\"\(status)\"}"
+    }
+    let approved = "{\"request_id\":\"req-1\",\"host_id\":\"h1\",\"sas_code\":\"1234\",\"status\":\"approved\",\"credential\":\(credentialJSON)}"
+    let approving = ScriptedTransport([poll("pending"), "oops", approved], statuses: [200, 500, 200])
+    let result = try await PairingClient(transport: approving)
+        .awaitConnectApproval(origin: origin, requestId: "req-1", pollInterval: .milliseconds(1))
+    #expect(result.credential?.access_token == "device-token")
+
+    for (status, expected) in [("rejected", PairingError.connectRejected), ("expired", PairingError.connectExpired)] {
+        let transport = ScriptedTransport([poll(status)], statuses: [200])
+        await #expect(throws: expected) {
+            try await PairingClient(transport: transport)
+                .awaitConnectApproval(origin: origin, requestId: "req-1", pollInterval: .milliseconds(1))
+        }
+    }
+}

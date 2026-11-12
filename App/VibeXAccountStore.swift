@@ -17,9 +17,11 @@ enum VibeXAccountTier: String, Codable, Sendable {
 }
 
 struct VibeXAccountUser: Codable, Equatable, Sendable {
+    var id: String?
     var email: String?
     var username: String?
     var displayName: String?
+    var avatarUrl: String?
     var tier: VibeXAccountTier?
     var createdAt: String?
 
@@ -103,6 +105,15 @@ struct VibeXRouterModel: Codable, Identifiable, Equatable, Sendable {
     var discountPermille: Int?
 }
 
+struct VibeXAssignedRelayServer: Codable, Equatable, Sendable {
+    var id: String?
+    var name: String?
+    var region: String?
+    var relayHost: String?
+    var relayPort: Int?
+    var publicOrigin: String?
+}
+
 struct VibeXAccountOverview: Codable, Equatable, Sendable {
     var user: VibeXAccountUser
     var balanceMicro: Int64?
@@ -110,6 +121,8 @@ struct VibeXAccountOverview: Codable, Equatable, Sendable {
     var grants: [VibeXCreditGrant]?
     var usage30d: VibeXUsage30d?
     var models: [VibeXRouterModel]?
+    var relayPermission: Bool?
+    var assignedRelayServer: VibeXAssignedRelayServer?
 }
 
 struct VibeXDeviceLogin: Codable, Equatable, Sendable {
@@ -140,45 +153,6 @@ struct VibeXSyncableHostProfile: Codable, Identifiable, Equatable, Sendable {
     var id: String { syncKey ?? profileId }
 }
 
-struct VibeXAccountHostConfigAgent: Codable, Equatable, Sendable {
-    var agentId: String
-    var displayName: String
-    var enabled: Bool
-}
-
-struct VibeXAccountHostConfigItem: Codable, Identifiable, Equatable, Sendable {
-    var hostId: String
-    var hostName: String
-    var kind: String?
-    var osType: String?
-    var osArch: String?
-    var updatedAt: String?
-    var agents: [VibeXAccountHostConfigAgent]?
-
-    var id: String { hostId }
-
-    var platformBadge: String? {
-        let rawOs = (osType ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let rawArch = (osArch ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !rawOs.isEmpty || !rawArch.isEmpty else { return nil }
-        let osLabel: String
-        switch rawOs.lowercased() {
-        case "macos", "darwin": osLabel = "macOS"
-        case "windows": osLabel = "Windows"
-        case "linux": osLabel = "Linux"
-        default: osLabel = rawOs
-        }
-        if !osLabel.isEmpty && !rawArch.isEmpty {
-            return "\(osLabel) · \(rawArch)"
-        }
-        return osLabel.isEmpty ? rawArch : osLabel
-    }
-
-    var enabledAgentsCount: Int {
-        (agents ?? []).filter(\.enabled).count
-    }
-}
-
 // MARK: - VibeX Account Store
 
 @Observable
@@ -187,19 +161,29 @@ final class VibeXAccountStore {
     static let siteBaseURL = "https://vibex.xforever.xin"
     private static let tokenAccountKey = "vibex.account.token"
     private static let cachedOverviewKey = "vibex.account.cached_overview"
+    private static let requiresLoginKey = "vibex.account.requires_login"
 
     private let defaults: UserDefaults
     private(set) var token: String?
     private(set) var overview: VibeXAccountOverview?
-    private(set) var hostConfigs: [VibeXAccountHostConfigItem] = []
+    private(set) var desktops: [AccountDesktop] = []
     private(set) var cloudSavedHosts: [VibeXSyncableHostProfile] = []
     private(set) var isLoading: Bool = false
     private(set) var isSyncingHosts: Bool = false
+    /// Set when loading the account's desktops failed, so an empty list is not mistaken for an
+    /// account without desktops.
+    private(set) var desktopsSyncFailed: Bool = false
     private(set) var startingLogin: Bool = false
     private(set) var signingOut: Bool = false
     private(set) var loginState: VibeXDeviceLogin?
     private(set) var authError: String?
     private(set) var lastSyncedAt: Date?
+    /// Increments when a device login finishes and the account's desktops are synced.
+    private(set) var completedSignIns = 0
+    /// Set by an explicit sign-out so the login page returns even while paired computers remain.
+    private(set) var requiresLogin: Bool {
+        didSet { defaults.set(requiresLogin, forKey: Self.requiresLoginKey) }
+    }
 
     private var loginPollTask: Task<Void, Never>?
     weak var attachedServerStore: ServerStore?
@@ -213,8 +197,25 @@ final class VibeXAccountStore {
         overview?.user
     }
 
+    /// Relay assigned to the account; accounts without an assignment use the official relay.
+    var relayBase: String {
+        let relay = overview?.assignedRelayServer
+        if let origin = relay?.publicOrigin?.trimmingCharacters(in: .whitespacesAndNewlines), !origin.isEmpty {
+            return origin
+        }
+        if let host = relay?.relayHost?.trimmingCharacters(in: .whitespacesAndNewlines), !host.isEmpty {
+            return "https://\(host)"
+        }
+        return PairingClient.defaultOfficialRelayBase
+    }
+
+    var canUseCloudRelay: Bool {
+        overview?.relayPermission != false
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        self.requiresLogin = defaults.bool(forKey: Self.requiresLoginKey)
         let savedToken = KeychainStore.read(account: Self.tokenAccountKey)
             ?? defaults.string(forKey: Self.tokenAccountKey)
         self.token = savedToken?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -280,7 +281,8 @@ final class VibeXAccountStore {
                 method: "POST",
                 body: [
                     "deviceName": devName.isEmpty ? "VibeX iOS" : devName,
-                    "hostId": ""
+                    "hostId": "",
+                    "nextPath": "/account"
                 ],
                 authenticated: false
             )
@@ -301,6 +303,11 @@ final class VibeXAccountStore {
         #if canImport(UIKit)
         UIApplication.shared.open(url)
         #endif
+    }
+
+    /// A computer paired with a connection code lets the user in without an account.
+    func waiveLoginRequirement() {
+ requiresLogin = false
     }
 
     func cancelLogin() {
@@ -340,7 +347,9 @@ final class VibeXAccountStore {
                         self.saveToken(tok)
                         self.loginState = nil
                         self.authError = nil
+                        self.requiresLogin = false
                         await self.refreshAll()
+                        self.completedSignIns += 1
                         return
                     } else if resp.status != "pending" {
                         self.loginState = nil
@@ -368,10 +377,10 @@ final class VibeXAccountStore {
         let oldToken = token
         saveToken(nil)
         overview = nil
-        hostConfigs = []
+        desktops = []
         cloudSavedHosts = []
         lastSyncedAt = nil
-        attachedServerStore?.updateAccountSyncedHostIds([])
+        requiresLogin = true
 
         if let oldToken, !oldToken.isEmpty {
             _ = try? await performRawRequest(
@@ -405,7 +414,7 @@ final class VibeXAccountStore {
         } catch let err as AccountHTTPError where err.code == "signed_out" {
             saveToken(nil)
             overview = nil
-            hostConfigs = []
+            desktops = []
             cloudSavedHosts = []
             return
         } catch {
@@ -421,12 +430,19 @@ final class VibeXAccountStore {
 
     private func fetchAccountHostsOnly() async {
         guard isSignedIn else { return }
-        if let configs = try? await fetchHostConfigs() {
-            self.hostConfigs = configs
-        }
+        await loadDesktops()
         if let saved = try? await fetchSavedHosts() {
             self.cloudSavedHosts = saved
         }
+    }
+
+    private func loadDesktops() async {
+ do {
+     desktops = try await fetchDesktops()
+     desktopsSyncFailed = false
+        } catch {
+     desktopsSyncFailed = true
+ }
     }
 
     func syncHosts(with servers: ServerStore, forcePush: Bool = false) async {
@@ -434,15 +450,11 @@ final class VibeXAccountStore {
         isSyncingHosts = true
         defer { isSyncingHosts = false }
 
-        if let configs = try? await fetchHostConfigs() {
-            self.hostConfigs = configs
-        }
+        await loadDesktops()
 
         if let remoteSaved = try? await fetchSavedHosts() {
             self.cloudSavedHosts = remoteSaved
-            servers.mergeAccountCloudProfiles(remoteSaved, hostConfigs: self.hostConfigs)
-        } else {
-            servers.mergeAccountCloudProfiles([], hostConfigs: self.hostConfigs)
+            servers.mergeAccountCloudProfiles(remoteSaved, relayBase: relayBase)
         }
 
         let localExport = servers.exportSyncableProfiles()
@@ -486,58 +498,14 @@ final class VibeXAccountStore {
         }
     }
 
-    private func fetchHostConfigs() async throws -> [VibeXAccountHostConfigItem] {
+    private func fetchDesktops() async throws -> [AccountDesktop] {
         let data = try await performRawRequest(
             path: "/api/account/desktop/host-configs",
             method: "GET",
             bodyData: nil,
             tokenOverride: token
         )
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return []
-        }
-        var results: [VibeXAccountHostConfigItem] = []
-        let rawList = (root["hosts"] as? [[String: Any]]) ?? (root["records"] as? [[String: Any]]) ?? []
-        for entry in rawList {
-            let snap = (entry["snapshot"] as? [String: Any]) ?? entry
-            guard let hostId = (snap["hostId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !hostId.isEmpty
-            else { continue }
-            let hostName = (snap["hostName"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-                ?? "VibeX Desktop"
-            let kind = snap["kind"] as? String
-            let osType = snap["osType"] as? String
-            let osArch = snap["osArch"] as? String
-            let updatedAt = snap["updatedAt"] as? String
-            var agents: [VibeXAccountHostConfigAgent] = []
-            if let rawAgents = snap["agents"] as? [[String: Any]] {
-                for ag in rawAgents {
-                    if let aid = ag["agentId"] as? String {
-                        agents.append(
-                            VibeXAccountHostConfigAgent(
-                                agentId: aid,
-                                displayName: (ag["displayName"] as? String) ?? aid,
-                                enabled: (ag["enabled"] as? Bool) ?? false
-                            )
-                        )
-                    }
-                }
-            }
-            if !results.contains(where: { $0.hostId == hostId }) {
-                results.append(
-                    VibeXAccountHostConfigItem(
-                        hostId: hostId,
-                        hostName: hostName,
-                        kind: kind,
-                        osType: osType,
-                        osArch: osArch,
-                        updatedAt: updatedAt,
-                        agents: agents
-                    )
-                )
-            }
-        }
-        return results
+        return AccountDesktop.parseDirectory(data)
     }
 
     private func fetchSavedHosts() async throws -> [VibeXSyncableHostProfile] {
@@ -753,7 +721,7 @@ struct VibeXAccountSettingsView: View {
             // 4. 云端同步电脑入口（去重：统一在「已配对的电脑」中管理与连接）
             if account.isSignedIn {
                 Section("跨设备电脑同步") {
-                    let syncedCount = max(account.hostConfigs.count, account.cloudSavedHosts.count)
+                    let syncedCount = max(account.desktops.count, account.cloudSavedHosts.count)
                     NavigationLink {
                         PairedComputersSettingsView()
                     } label: {

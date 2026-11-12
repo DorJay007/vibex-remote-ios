@@ -85,6 +85,12 @@ public enum PairingError: Error, Equatable, LocalizedError {
     case invitationExpired
     case mobileDeviceConflict(existingDeviceName: String)
     case unreachable
+    case accountMismatch
+    case accountTokenInvalid
+    case hostAccountSignedOut
+    case accountVerificationUnavailable
+    case connectRejected
+    case connectExpired
 
     public var errorDescription: String? {
         switch self {
@@ -114,6 +120,18 @@ public enum PairingError: Error, Equatable, LocalizedError {
             return "该电脑已连接移动设备「\(existingDeviceName)」，同一台电脑仅支持一台手机远程连接"
         case .unreachable:
             return "无法连接到电脑，请确认电脑端在线并已开启远程连接"
+        case .accountMismatch:
+            return "这台电脑登录的是其他 VibeX 账号"
+        case .accountTokenInvalid:
+            return "登录状态已失效，请重新登录"
+        case .hostAccountSignedOut:
+            return "这台电脑未登录 VibeX 账号"
+        case .accountVerificationUnavailable:
+            return "暂时无法验证账号，请稍后重试"
+        case .connectRejected:
+            return "电脑端已拒绝连接"
+        case .connectExpired:
+            return "确认超时，请重试"
         }
     }
 }
@@ -367,17 +385,22 @@ public struct PairingClient: Sendable {
         throw PairingError.unreachable
     }
 
+    /// `accountToken` asks the Host to verify that this phone and the desktop share one VibeX account.
     public func requestConnect(
         origin: HostOrigin,
         deviceName: String = "iOS Companion",
-        replaceExistingMobile: Bool = false
+        replaceExistingMobile: Bool = false,
+        accountToken: String? = nil
     ) async throws -> DeviceConnectRequestResult {
         let cleanName = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "device_name": cleanName.isEmpty ? "iOS Companion" : cleanName,
             "client_kind": "mobile",
             "replace_existing_mobile": replaceExistingMobile,
         ]
+        if let token = accountToken?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty {
+            payload["account_token"] = token
+        }
         let body = try JSONSerialization.data(withJSONObject: payload)
         let exchange = try await transport.execute(
             method: "POST",
@@ -409,6 +432,28 @@ public struct PairingClient: Sendable {
             throw PairingError.redeemFailed(exchange.status)
         }
         return try Self.parseConnectRequestResult(exchange.body)
+    }
+
+    /// Polls until the desktop user answers; transient poll failures are retried until the Host reports expiry.
+    public func awaitConnectApproval(
+        origin: HostOrigin,
+        requestId: String,
+        pollInterval: Duration = .milliseconds(1500)
+    ) async throws -> DeviceConnectRequestResult {
+        while true {
+            try await Task.sleep(for: pollInterval)
+            guard let poll = try? await pollConnect(origin: origin, requestId: requestId) else { continue }
+            switch poll.status {
+            case "approved" where poll.credential != nil:
+                return poll
+            case "rejected":
+                throw PairingError.connectRejected
+            case "expired":
+                throw PairingError.connectExpired
+            default:
+                continue
+            }
+        }
     }
 
     private static func parseConnectRequestResult(_ data: Data) throws -> DeviceConnectRequestResult {
@@ -509,16 +554,7 @@ public struct PairingClient: Sendable {
         }
     }
 
-    public static func discoverLanHosts(
-        port: Int = 17891,
-        extraRelayOrigins: [String] = [],
-        includeCloudRelay: Bool = false,
-        cloudOnly: Bool = false
-    ) async -> [DiscoveredLanHost] {
-        if cloudOnly {
-            return await discoverSameExitPublicHosts(extraRelayOrigins: extraRelayOrigins)
-        }
-
+    public static func discoverLanHosts(port: Int = 17891) async -> [DiscoveredLanHost] {
         var candidates: [String] = []
         var seenCandidates = Set<String>()
         func addCandidate(_ url: String) {
@@ -541,7 +577,7 @@ public struct PairingClient: Sendable {
             }
         }
 
-        let localFound = await withTaskGroup(of: DiscoveredLanHost?.self) { group -> [DiscoveredLanHost] in
+        return await withTaskGroup(of: DiscoveredLanHost?.self) { group -> [DiscoveredLanHost] in
             let maxConcurrency = 48
             var index = 0
             while index < min(maxConcurrency, candidates.count) {
@@ -567,28 +603,6 @@ public struct PairingClient: Sendable {
             }
             return deduplicateHosts(results)
         }
-
-        if !localFound.isEmpty || !includeCloudRelay {
-            return localFound
-        }
-        return await discoverSameExitPublicHosts(extraRelayOrigins: extraRelayOrigins)
-    }
-
-    public static func discoverSameExitPublicHosts(
-        extraRelayOrigins: [String] = [],
-        timeoutSeconds: TimeInterval = 2.0
-    ) async -> [DiscoveredLanHost] {
-        // Cloud discovery strictly probes only the user's own known/paired origins.
-        // Never query global or shared-subnet unauthenticated host lists.
-        var results: [DiscoveredLanHost] = []
-        for extra in extraRelayOrigins where extra.contains("/t/") || extra.lowercased().hasPrefix("https://") {
-            if !results.contains(where: { $0.origin == extra }) {
-                if let verified = await probeHostHealth(originUrl: extra, timeoutSeconds: timeoutSeconds) {
-                    results.append(verified.host)
-                }
-            }
-        }
-        return deduplicateHosts(results)
     }
 
     public static func resolvePairingCodeRendezvous(
@@ -792,6 +806,10 @@ public struct PairingClient: Sendable {
         case "invalid_pairing": return .codeInvalid
         case "mobile_device_conflict":
             return .mobileDeviceConflict(existingDeviceName: details?.existing_device_name ?? "另一台手机")
+        case "account_mismatch": return .accountMismatch
+        case "account_token_invalid": return .accountTokenInvalid
+        case "host_account_signed_out": return .hostAccountSignedOut
+        case "account_verification_unavailable": return .accountVerificationUnavailable
         default: return status == 401 ? .codeInvalid : .redeemFailed(status)
         }
     }

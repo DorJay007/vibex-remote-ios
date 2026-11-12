@@ -71,7 +71,7 @@ struct SettingsView: View {
                                 systemImage: "desktopcomputer",
                                 tint: .blue
                             )
-                            Text("已配对的电脑")
+                            Text("连接")
                                 .font(.subheadline.weight(.medium))
                             Spacer(minLength: 6)
                             if let active = servers.activeProfile {
@@ -317,7 +317,7 @@ struct ProfileSettingsDetailView: View {
     }
 }
 
-// MARK: - 2. 已配对的电脑（局域网 / 云服务 Beta 统一配对与诊断）
+// MARK: - 2. 连接（连接码配对、自动连接与已配对电脑）
 
 struct PairedComputersSettingsView: View {
     @Environment(ServerStore.self) private var servers
@@ -332,7 +332,6 @@ struct PairedComputersSettingsView: View {
 
             Section("新增连接") {
                 Button {
-                    servers.selectDiscoveryMode("lan")
                     showingPairSheet = true
                 } label: {
                     HStack(spacing: 12) {
@@ -345,13 +344,9 @@ struct PairedComputersSettingsView: View {
                                 .foregroundStyle(Color.accentColor)
                         }
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("配对新的电脑")
+                            Text("使用连接码配对")
                                 .font(.subheadline.weight(.bold))
                                 .foregroundStyle(Color.accentColor)
-                            Text("选择局域网直连或云服务跨网配对")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
                         }
                         Spacer()
                         Image(systemName: "plus.circle.fill")
@@ -456,7 +451,7 @@ struct PairedComputersSettingsView: View {
                 }
             }
         }
-        .navigationTitle("已配对的电脑")
+        .navigationTitle("连接")
         .navigationBarTitleDisplayMode(.inline)
         .task(id: servers.activeProfile?.id) {
             await servers.refreshActiveTelemetry()

@@ -88,16 +88,10 @@ final class ServerStore {
     }
     var isSessionConnected: Bool = true
 
-    // Discovery & 1-Click Pairing state (Default to "lan" — never auto-cloud)
-    var preferredDiscoveryMode: String = "lan"
     var discoveredHosts: [DiscoveredLanHost] = []
     var discoveringHosts: Bool = false
-    var pendingConnectSasCode: String?
-    var pendingConnectHostName: String?
-    var pendingConnectOrigin: String?
     var pairingInProgress: Bool = false
     var pairingError: String?
-    var pendingMobileConflict: PendingMobileConflict?
     var pendingCloudFallback: PendingCloudFallbackPrompt?
     var isPresentingPairSheet: Bool = false
     var connectionSuccessCount: Int = 0
@@ -107,11 +101,9 @@ final class ServerStore {
     var realtimeRttMs: Int?
     var connectionFailureReason: String?
 
-    private var connectPollTask: Task<Void, Never>?
     private var discoverTask: Task<Void, Never>?
     private var telemetryLoopTask: Task<Void, Never>?
     private var declinedCloudFallbackProfileIds = Set<String>()
-    private var accountSyncedHostIds: [String] = []
     weak var accountStore: VibeXAccountStore?
 
     init(defaults: UserDefaults = .standard) {
@@ -132,14 +124,7 @@ final class ServerStore {
         telemetryLoopTask?.cancel()
         telemetryLoopTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                if let self,
-                   self.activeProfile != nil,
-                   self.isSessionConnected,
-                   !self.isPresentingPairSheet,
-                   !self.pairingInProgress,
-                   self.pendingConnectSasCode == nil,
-                   self.pendingMobileConflict == nil
-                {
+                if let self, self.activeProfile != nil, self.isSessionConnected, !self.isPresentingPairSheet, !self.pairingInProgress {
                     await self.refreshActiveTelemetry()
                 }
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
@@ -156,165 +141,91 @@ final class ServerStore {
         Task { await refreshActiveTelemetry() }
     }
 
-    func selectDiscoveryMode(_ mode: String) {
-        preferredDiscoveryMode = mode
-        discoveredHosts = []
-        pairingError = nil
-        discoverHosts(modeOverride: mode)
-    }
-
-    func discoverHosts(modeOverride: String? = nil) {
-        let mode = modeOverride ?? preferredDiscoveryMode
-        preferredDiscoveryMode = mode
+    func discoverHosts() {
         discoverTask?.cancel()
         discoveringHosts = true
-        var extraOrigins = profiles.map(\.origin)
-        let relayBase = PairingClient.defaultOfficialRelayBase
-        for profile in profiles {
-            if let hid = profile.hostId, !hid.isEmpty, !hid.hasPrefix("host:"), !relayBase.isEmpty {
-                let tenantUrl = "\(relayBase)/t/\(hid)"
-                if !extraOrigins.contains(tenantUrl) {
-                    extraOrigins.append(tenantUrl)
-                }
-            }
-        }
-        for hid in accountSyncedHostIds where !hid.isEmpty && !hid.hasPrefix("host:") && !relayBase.isEmpty {
-            let tenantUrl = "\(relayBase)/t/\(hid)"
-            if !extraOrigins.contains(tenantUrl) {
-                extraOrigins.append(tenantUrl)
-            }
-        }
-        let useCloud = (mode == "cloud")
         discoverTask = Task { @MainActor in
-            let found = await PairingClient.discoverLanHosts(
-                extraRelayOrigins: useCloud ? extraOrigins : [],
-                includeCloudRelay: useCloud,
-                cloudOnly: useCloud
-            )
+            let found = await PairingClient.discoverLanHosts()
             guard !Task.isCancelled else { return }
             self.discoveredHosts = found
             self.discoveringHosts = false
         }
     }
 
-    @MainActor
-    func requestConnectToHost(
-        _ host: DiscoveredLanHost,
-        deviceName: String,
-        replaceExistingMobile: Bool = false,
-        onConflict: (@MainActor (PendingMobileConflict) -> Void)? = nil
-    ) {
-        if pendingConnectSasCode != nil, pendingConnectOrigin == host.origin {
-            return
-        }
-        connectPollTask?.cancel()
-        pairingInProgress = true
-        pairingError = nil
-        connectPollTask = Task { @MainActor in
-            guard let origin = try? HostOrigin.parse(host.origin) else {
-                self.pairingInProgress = false
-                self.pairingError = "无效的电脑连接地址"
-                return
-            }
-            if origin.value.contains("/t/") {
-                PairingClient.rememberRelayBase(origin.value)
-            }
-            let client = PairingClient()
-            let requested: DeviceConnectRequestResult
-            do {
-                requested = try await client.requestConnect(
-                    origin: origin,
-                    deviceName: deviceName,
-                    replaceExistingMobile: replaceExistingMobile
-                )
-            } catch let PairingError.mobileDeviceConflict(existingName) {
-                self.pairingInProgress = false
-                let conflict = PendingMobileConflict(
-                    existingDeviceName: existingName,
-                    currentDeviceName: deviceName
-                ) { [weak self] in
-                    self?.requestConnectToHost(
-                        host,
-                        deviceName: deviceName,
-                        replaceExistingMobile: true,
-                        onConflict: onConflict
-                    )
-                }
-                if let onConflict {
-                    onConflict(conflict)
-                } else {
-                    self.pendingMobileConflict = conflict
-                }
-                return
-            } catch {
-                self.pairingInProgress = false
-                self.pairingError = Self.sanitizeError(error)
-                return
-            }
-
-            self.pairingInProgress = false
-            self.pendingConnectSasCode = requested.sasCode
-            self.pendingConnectHostName = requested.hostName ?? host.displayName
-            self.pendingConnectOrigin = origin.value
-
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
-                guard !Task.isCancelled else { break }
-                guard let poll = try? await client.pollConnect(origin: origin, requestId: requested.requestId) else {
-                    continue
-                }
-                switch poll.status {
-                case "approved":
-                    guard let cred = poll.credential else { continue }
-                    let resolvedHostId = poll.hostId.isEmpty ? (host.hostId ?? nil) : poll.hostId
-                    let resolvedHostName = (poll.hostName ?? host.displayName)
-                        .replacingOccurrences(of: ".local", with: "")
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    try? KeychainStore.save(cred.access_token, account: cred.device_id)
-                    let profile = ServerProfile(
-                        id: cred.device_id,
-                        origin: origin.value,
-                        deviceName: deviceName,
-                        serverVersion: "0.4.2",
-                        protocolVersion: PairingClient.clientProtocolVersion,
-                        scopes: cred.scopes,
-                        hostId: resolvedHostId,
-                        hostName: resolvedHostName.isEmpty ? nil : resolvedHostName
-                    )
-                    self.isSessionConnected = true
-                    self.upsertProfile(profile)
-                    self.connectionSuccessCount += 1
-                    self.pendingConnectSasCode = nil
-                    self.pendingConnectHostName = nil
-                    self.pendingConnectOrigin = nil
-                    await self.refreshActiveTelemetry()
-                    return
-                case "rejected":
-                    self.pendingConnectSasCode = nil
-                    self.pendingConnectHostName = nil
-                    self.pendingConnectOrigin = nil
-                    self.pairingError = "电脑端已忽略连接请求"
-                    return
-                case "expired":
-                    self.pendingConnectSasCode = nil
-                    self.pendingConnectHostName = nil
-                    self.pendingConnectOrigin = nil
-                    self.pairingError = "连接请求已超时，请重新点击连接"
-                    return
-                default:
-                    continue
-                }
-            }
-        }
+    /// LAN origin of the desktop if it answered the latest Wi-Fi scan.
+    func lanOrigin(forHostId hostId: String) -> String? {
+        discoveredHosts.first { host in
+            !host.isCloudService && host.hostId.map(AccountDesktop.rawHostId) == hostId
+        }?.origin
     }
 
+    /// Connects with a credential this phone already holds for the desktop; false when none is usable.
     @MainActor
-    func cancelPendingConnectRequest() {
-        connectPollTask?.cancel()
-        connectPollTask = nil
-        pendingConnectSasCode = nil
-        pendingConnectHostName = nil
-        pendingConnectOrigin = nil
+    func connectSavedCredential(hostId: String, origin: String) async -> Bool {
+        guard let profile = profiles.last(where: { $0.hostId.map(AccountDesktop.rawHostId) == hostId }) else { return false }
+        guard let token = KeychainStore.read(account: profile.id) else { return false }
+        guard let parsed = try? HostOrigin.parse(origin) else { return false }
+        do {
+            _ = try await HostClient(origin: parsed, accessToken: token).checkCapabilities()
+        } catch let HostError.server(status, _) where status == 401 {
+            forget(profile)
+            return false
+        } catch {
+            return false
+        }
+        guard let idx = profiles.firstIndex(where: { $0.id == profile.id }) else { return false }
+        profiles[idx].origin = parsed.value
+        if parsed.value.contains("/t/") {
+            PairingClient.rememberRelayBase(parsed.value)
+        }
+        adopt(profiles[idx])
+        return true
+    }
+
+    /// Asks the desktop to approve this phone for the signed-in VibeX account, then adopts the issued credential.
+    @MainActor
+    func connectViaAccountRequest(
+        origin: String,
+        hostId: String,
+        hostName: String,
+        deviceName: String,
+        accountToken: String,
+        replaceExistingMobile: Bool,
+        onAwaitingApproval: @MainActor (String) -> Void
+    ) async throws {
+        let parsed = try HostOrigin.parse(origin)
+        if parsed.value.contains("/t/") {
+            PairingClient.rememberRelayBase(parsed.value)
+        }
+        pairingInProgress = true
+        defer { pairingInProgress = false }
+        let client = PairingClient()
+        let requested = try await client.requestConnect(
+            origin: parsed,
+            deviceName: deviceName,
+            replaceExistingMobile: replaceExistingMobile,
+            accountToken: accountToken
+        )
+        onAwaitingApproval(requested.sasCode)
+        let approved = try await client.awaitConnectApproval(origin: parsed, requestId: requested.requestId)
+        guard let credential = approved.credential else { throw PairingError.connectExpired }
+        try KeychainStore.save(credential.access_token, account: credential.device_id)
+        let capabilities = try? await HostClient(origin: parsed, accessToken: credential.access_token).checkCapabilities()
+        let resolvedName = (approved.hostName ?? hostName)
+            .replacingOccurrences(of: ".local", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        adopt(
+            ServerProfile(
+                id: credential.device_id,
+                origin: parsed.value,
+                deviceName: deviceName,
+                serverVersion: capabilities?.server_version ?? "",
+                protocolVersion: capabilities?.protocol_version ?? PairingClient.clientProtocolVersion,
+                scopes: credential.scopes,
+                hostId: approved.hostId.isEmpty ? hostId : AccountDesktop.rawHostId(approved.hostId),
+                hostName: resolvedName.isEmpty ? nil : resolvedName
+            )
+        )
     }
 
     /// `input` is a pasted or scanned invitation, or a bare 8-digit connection code.
@@ -326,7 +237,7 @@ final class ServerStore {
         manualOrigin: String = "",
         deviceName: String,
         replaceExistingMobile: Bool = false,
-        onConflict: (@MainActor (PendingMobileConflict) -> Void)? = nil
+        onConflict: @escaping @MainActor (PendingMobileConflict) -> Void
     ) async throws {
         let client = PairingClient()
         let trimmedInput = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -395,11 +306,7 @@ final class ServerStore {
                 }
                 let hasCloudCandidate = candidateUrls.contains { $0.contains("/t/") || $0.lowercased().hasPrefix("https://") }
                 if candidateUrls.isEmpty || !hasCloudCandidate {
-                    let autoFound = await PairingClient.discoverLanHosts(
-                        extraRelayOrigins: profiles.map(\.origin),
-                        includeCloudRelay: false,
-                        cloudOnly: false
-                    )
+                    let autoFound = await PairingClient.discoverLanHosts()
                     if self.discoveredHosts.isEmpty {
                         self.discoveredHosts = autoFound
                     }
@@ -466,31 +373,34 @@ final class ServerStore {
                     self.pairingError = Self.sanitizeError(error)
                 }
             }
-            if let onConflict {
-                onConflict(conflict)
-            } else {
-                self.pendingMobileConflict = conflict
-            }
+            onConflict(conflict)
             throw PairingError.mobileDeviceConflict(existingDeviceName: existingName)
         }
 
         let id = session.credential.device_id
         try KeychainStore.save(session.credential.access_token, account: id)
-        let profile = ServerProfile(
-            id: id,
-            origin: session.origin.value,
-            deviceName: deviceName,
-            serverVersion: session.capabilities.server_version,
-            protocolVersion: session.capabilities.protocol_version,
-            scopes: session.credential.scopes,
-            hostId: resolvedHostId,
-            hostName: resolvedHostName
+        adopt(
+            ServerProfile(
+                id: id,
+                origin: session.origin.value,
+                deviceName: deviceName,
+                serverVersion: session.capabilities.server_version,
+                protocolVersion: session.capabilities.protocol_version,
+                scopes: session.credential.scopes,
+                hostId: resolvedHostId,
+                hostName: resolvedHostName
+            )
         )
+    }
+
+    @MainActor
+    private func adopt(_ profile: ServerProfile) {
         isSessionConnected = true
         isOnline = true
         connectionFailureReason = nil
+        pairingError = nil
         pendingCloudFallback = nil
-        declinedCloudFallbackProfileIds.remove(id)
+        declinedCloudFallbackProfileIds.remove(profile.id)
         upsertProfile(profile)
         connectionSuccessCount += 1
         Task { @MainActor [weak self] in
@@ -649,24 +559,11 @@ final class ServerStore {
     }
 
     @MainActor
-    func updateAccountSyncedHostIds(_ hostIds: [String]) {
-        self.accountSyncedHostIds = hostIds
-    }
-
-    @MainActor
-    func mergeAccountCloudProfiles(
-        _ cloudProfiles: [VibeXSyncableHostProfile],
-        hostConfigs: [VibeXAccountHostConfigItem]
-    ) {
-        var discoveredAccountHostIds = hostConfigs.map(\.hostId)
+    func mergeAccountCloudProfiles(_ cloudProfiles: [VibeXSyncableHostProfile], relayBase: String) {
         var didChange = false
-        let relayBase = PairingClient.defaultOfficialRelayBase
 
         for remote in cloudProfiles {
-            let cleanHostId = remote.hostId?.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let cleanHostId, !cleanHostId.isEmpty, !discoveredAccountHostIds.contains(cleanHostId) {
-                discoveredAccountHostIds.append(cleanHostId)
-            }
+            let cleanHostId = remote.hostId.map(AccountDesktop.rawHostId)
             guard let accessToken = remote.credential?.accessToken.trimmingCharacters(in: .whitespacesAndNewlines),
                   !accessToken.isEmpty
             else { continue }
@@ -702,7 +599,6 @@ final class ServerStore {
             }
         }
 
-        self.accountSyncedHostIds = discoveredAccountHostIds
         if didChange {
             persist()
             Task { await refreshActiveTelemetry() }
