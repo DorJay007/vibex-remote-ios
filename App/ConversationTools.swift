@@ -74,7 +74,7 @@ struct DirectoryView: View {
         } else if let message = list.errorMessage {
             LoadFailureView(message: message) { Task { await load() } }
         } else {
-            ProgressView()
+            FileTreeSkeletonView()
         }
     }
 
@@ -183,7 +183,7 @@ struct FileContentView: View {
             } else if let errorMessage {
                 LoadFailureView(message: errorMessage) { Task { await load() } }
             } else {
-                ProgressView()
+                CodeFileSkeletonView()
             }
         }
         .navigationTitle((path as NSString).lastPathComponent)
@@ -258,7 +258,7 @@ struct DiffListView: View {
                 Task { await list.load { try await client.workspaceDiff(workspaceID: workspaceID) } }
             }
         } else {
-            ProgressView()
+            FileTreeSkeletonView()
         }
     }
 
@@ -298,7 +298,7 @@ struct DiffFileView: View {
     var body: some View {
         Group {
             if loadingContent {
-                ProgressView("正在读取文件变更…")
+                CodeFileSkeletonView()
             } else if detectedBinary {
                 ContentUnavailableView("二进制或图片资源文件，无文本行差异", systemImage: "doc.zipper")
             } else if isEmptyFile {

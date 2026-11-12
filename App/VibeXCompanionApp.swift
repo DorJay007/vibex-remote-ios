@@ -4,12 +4,17 @@ import SwiftUI
 struct VibeXCompanionApp: App {
     @State private var servers = ServerStore()
     @State private var appearance = AppAppearanceStore()
+    @State private var account = VibeXAccountStore()
 
     var body: some Scene {
         WindowGroup {
             RootTabView()
                 .environment(servers)
                 .environment(appearance)
+                .environment(account)
+                .task {
+                    account.attach(serverStore: servers)
+                }
                 .alert(
                     "局域网已断开，是否切换至云服务？",
                     isPresented: Binding(

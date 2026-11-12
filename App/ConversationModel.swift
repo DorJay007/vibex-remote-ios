@@ -158,7 +158,13 @@ final class ConversationModel {
 
     /// Live session controls win; before the Agent has reported any, fall back to the desktop's saved ones.
     var modelOptions: [ConfigOption] {
-        session.modelOptions.isEmpty ? (currentAgent?.modelOptions ?? []) : session.modelOptions
+        if !session.modelOptions.isEmpty {
+            return session.modelOptions
+        }
+        if let agentOptions = currentAgent?.modelOptions, !agentOptions.isEmpty {
+            return agentOptions
+        }
+        return [CatalogAgent.fallbackModelOption(for: conversation.agent_id ?? "claude_code")]
     }
 
     var otherOptions: [ConfigOption] {
@@ -188,7 +194,13 @@ final class ConversationModel {
     var currentModelLabel: String? {
         guard let option = modelOptions.first else { return conversation.model }
         let value = value(of: option)
-        return option.choices.first { $0.value == value }?.label ?? option.currentLabel ?? conversation.model
+        if let matched = option.choices.first(where: { $0.value == value }) {
+            return matched.label
+        }
+        if case .string(let raw) = value, !raw.isEmpty {
+            return raw
+        }
+        return option.currentLabel ?? conversation.model
     }
 
     /// Other usable Agents with models: shown for reference, a conversation keeps its Agent.
@@ -289,6 +301,13 @@ final class ConversationModel {
             }
         }
         optionOverrides[option.key] = nil
+    }
+
+    func setCustomModel(_ modelID: String) async {
+        let key = modelOptions.first?.key ?? "model"
+        let choice = CatalogAgent.makeCustomChoice(modelID)
+        let option = modelOptions.first ?? CatalogAgent.fallbackModelOption(for: conversation.agent_id ?? "claude_code")
+        await set(option.key == key ? option : CatalogAgent.makeCustomModelOption(key: key, modelID: modelID), to: choice)
     }
 
     private func perform(_ action: () async throws -> Void) async -> Bool {

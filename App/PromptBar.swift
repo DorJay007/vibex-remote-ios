@@ -4,17 +4,19 @@ import UIKit
 
 enum ComposerMenu: Equatable {
     case access
+    case plusAgent
     case plusModel
     case plusMode
     case plusPerms
+    case agent
     case model
     case effort
 
     var isBottomDrawer: Bool {
         switch self {
-        case .access, .plusModel, .plusMode, .plusPerms:
+        case .access, .plusAgent, .plusModel, .plusMode, .plusPerms:
             return true
-        case .model, .effort:
+        case .agent, .model, .effort:
             return false
         }
     }
@@ -65,6 +67,8 @@ struct PromptBar: View {
     let hasAlert: Bool
     let modelName: String?
     var agentID: String?
+    var agentName: String? = nil
+    var agentChoices: [PromptChoice] = []
     let modelChoices: [PromptChoice]
     let otherModelGroups: [PromptGroup]
     let otherAgentNote: String?
@@ -74,7 +78,9 @@ struct PromptBar: View {
     var openFiles: (() -> Void)? = nil
     let send: () -> Void
     let stop: () -> Void
+    var pickAgent: ((String) -> Void)? = nil
     let pickModel: (String) -> Void
+    var onAddCustomModel: ((String) -> Void)? = nil
     let pickAccess: (String) -> Void
     let pickExtra: (String) -> Void
     let setEffort: (Int) -> Void
@@ -85,6 +91,8 @@ struct PromptBar: View {
     @State private var previewingAttached: AttachedImageItem?
     @State private var showPhotoPicker = false
     @State private var showCameraSheet = false
+    @State private var showingCustomModelAlert = false
+    @State private var customModelDraft = ""
 
     private let spark = Color(red: 0.70, green: 0.62, blue: 1.0)
     private var armed: Bool {
@@ -145,7 +153,7 @@ struct PromptBar: View {
             }
             .ignoresSafeArea()
         }
-        .fullScreenCover(item: $previewingAttached) { item in
+            .fullScreenCover(item: $previewingAttached) { item in
             ZoomableImagePreviewSheet(
                 item: PreviewableImageItem(
                     id: item.token,
@@ -160,6 +168,23 @@ struct PromptBar: View {
                     }
                 }
             )
+        }
+        .alert("自定义 / 中转模型", isPresented: $showingCustomModelAlert) {
+            TextField("输入模型 ID (如 claude-opus-4-8 / gpt-6-sol)", text: $customModelDraft)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button("取消", role: .cancel) {
+                customModelDraft = ""
+            }
+            Button("使用此模型") {
+                let trimmed = customModelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                customModelDraft = ""
+                if !trimmed.isEmpty {
+                    onAddCustomModel?(trimmed)
+                }
+            }
+        } message: {
+            Text("如果你在电脑端连接了 API 中转或自建模型网关，可直接输入模型名称并在新对话中使用。")
         }
     }
 
@@ -248,28 +273,68 @@ struct PromptBar: View {
         .padding(.bottom, 8)
     }
 
+    private var effectiveModelChoices: [PromptChoice] {
+        guard onAddCustomModel != nil else { return modelChoices }
+        var rows = modelChoices
+        rows.append(
+            PromptChoice(
+                id: "__custom_model__",
+                title: "自定义 / 中转模型…",
+                detail: "手动输入模型 ID",
+                icon: "slider.horizontal.3",
+                selected: false,
+                enabled: true
+            )
+        )
+        return rows
+    }
+
+    private func handleModelSelection(_ id: String) {
+        if id == "__custom_model__" {
+            menu = nil
+            customModelDraft = ""
+            showingCustomModelAlert = true
+        } else {
+            pickModel(id)
+        }
+    }
+
     private var toolRow: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 5) {
             ToolButton(icon: "plus", on: isPlusOpen, alert: hasAlert, label: "更多功能") {
                 focused = false
                 menu = isPlusOpen ? nil : .access
+            }
+            if !agentChoices.isEmpty, let agentName {
+                PickPill(on: menu == .agent || menu == .plusAgent, label: "选择 AI Agent") {
+                    toggle(.agent)
+                } content: {
+                    if agentID != nil { AgentIconView(agent: agentID, size: 13) }
+                    Text(agentName).lineLimit(1)
+                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
+                }
             }
             if let modelName {
                 PickPill(on: menu == .model || menu == .plusModel, label: "选择模型") {
                     toggle(.model)
                 } content: {
-                    if agentID != nil { AgentIconView(agent: agentID, size: 13.5) }
+                    if agentChoices.isEmpty {
+                        if agentID != nil { AgentIconView(agent: agentID, size: 13) }
+                    } else {
+                        Image(systemName: "cpu").font(.system(size: 10.5, weight: .semibold))
+                    }
                     Text(modelName).lineLimit(1)
-                    Image(systemName: "chevron.down").font(.system(size: 9.5, weight: .bold))
+                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
                 }
             }
             if let effort {
                 PickPill(on: menu == .effort || menu == .plusMode, tint: effortAtMax ? spark : nil, label: "推理强度") {
                     toggle(.effort)
                 } content: {
-                    Image(systemName: "sparkles").font(.system(size: 11.5, weight: .semibold))
-                    Text(effort.levels[effort.index])
+                    Image(systemName: "sparkles").font(.system(size: 11, weight: .semibold))
+                    Text(effort.levels[effort.index]).lineLimit(1)
                 }
+                .layoutPriority(1)
             }
             Spacer(minLength: 0)
             SendButton(
@@ -293,6 +358,7 @@ struct PromptBar: View {
                 stop: stop
             )
         }
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private func toggle(_ target: ComposerMenu) {
@@ -307,14 +373,25 @@ struct PromptBar: View {
         switch kind {
         case .access:
             plusActionGrid
+        case .plusAgent:
+            drawerSubpanel(title: "选择 AI Agent") {
+                DrawerChoiceList(
+                    rows: agentChoices,
+                    empty: "没有可用的 AI Agent",
+                    select: { id in
+                        pickAgent?(id)
+                        menu = nil
+                    }
+                )
+            }
         case .plusModel:
             drawerSubpanel(title: "选择模型") {
                 DrawerChoiceList(
-                    rows: modelChoices,
+                    rows: effectiveModelChoices,
                     groups: otherModelGroups,
                     footnote: otherAgentNote,
                     empty: "电脑端没有配置可选模型",
-                    select: pickModel
+                    select: handleModelSelection
                 )
             }
         case .plusMode:
@@ -376,6 +453,11 @@ struct PromptBar: View {
             PlusGridTile(title: "文件", systemImage: "at") {
                 menu = nil
                 openFiles?()
+            }
+            if !agentChoices.isEmpty {
+                PlusGridTile(title: "Agent", systemImage: "person.crop.rectangle.stack") {
+                    menu = .plusAgent
+                }
             }
             PlusGridTile(title: "模型", systemImage: "cpu") {
                 menu = .plusModel
@@ -446,15 +528,25 @@ struct PromptBar: View {
     private func floatingMenuView(_ kind: ComposerMenu) -> some View {
         Group {
             switch kind {
+            case .agent:
+                MenuList(
+                    rows: agentChoices,
+                    empty: "没有可用的 AI Agent",
+                    select: { id in
+                        pickAgent?(id)
+                        menu = nil
+                    }
+                )
+                .frame(maxWidth: 250)
             case .model:
                 MenuList(
-                    rows: modelChoices,
+                    rows: effectiveModelChoices,
                     groups: otherModelGroups,
                     footnote: otherAgentNote,
                     empty: "电脑端没有配置可选模型",
-                    select: pickModel
+                    select: handleModelSelection
                 )
-                .frame(maxWidth: 250)
+                .frame(maxWidth: 270)
             case .effort:
                 if let effort {
                     EffortMenu(effort: effort, atMax: effortAtMax, spark: spark, change: setEffort)

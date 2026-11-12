@@ -4,35 +4,61 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(ServerStore.self) private var servers
     @Environment(AppAppearanceStore.self) private var appearance
-    @State private var showingQuickScanner = false
-    @State private var showingManualPair = false
+    @Environment(VibeXAccountStore.self) private var account
 
     var body: some View {
         NavigationStack {
             List {
-                // 1. 个人资料
+                // 1. VibeX 账号（唯一顶栏个人中心）
                 Section {
                     NavigationLink {
-                        ProfileSettingsDetailView()
+                        VibeXAccountSettingsView()
                     } label: {
                         HStack(spacing: 12) {
                             MemberBotAvatarView(
                                 config: appearance.avatarConfig,
-                                size: 44,
+                                size: 42,
                                 animated: true
                             )
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(appearance.userName)
-                                    .font(.body.weight(.semibold))
-                                    .foregroundStyle(.primary)
-                                Text("\(appearance.userHandle) · \(appearance.userRoleTitle)")
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack(spacing: 6) {
+                                    Text(account.isSignedIn ? (account.user?.resolvedDisplayName ?? "VibeX 账号") : "VibeX 账号")
+                                        .font(.body.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
+                                    if account.isSignedIn {
+                                        let bal = VibeXAccountSettingsView.formatCredits(account.overview?.balanceMicro ?? 0)
+                                        Text("$\(bal)")
+                                            .font(.caption2.monospacedDigit().weight(.semibold))
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 1.5)
+                                            .background(
+                                                Capsule().fill(Color.accentColor.opacity(0.14))
+                                            )
+                                            .foregroundStyle(Color.accentColor)
+                                    }
+                                }
+                                if account.isSignedIn, let user = account.user {
+                                    Text("\(user.email ?? user.accountIdentifier ?? user.resolvedDisplayName) · 跨端同步与模型额度")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                } else {
+                                    Text("登录以跨端同步电脑、查看订阅与模型额度")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
+                            Spacer(minLength: 6)
+                            if !account.isSignedIn {
+                                Text("未登录")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
-                                    .lineLimit(1)
                             }
                         }
                     }
-                    .listRowInsets(EdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14))
+                    .listRowInsets(EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14))
                 }
 
                 // 2. 工作站与扩展
@@ -184,28 +210,6 @@ struct SettingsView: View {
             .contentMargins(.top, 4, for: .scrollContent)
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button("扫码配对电脑", systemImage: "qrcode.viewfinder") {
-                            showingQuickScanner = true
-                        }
-                        Button("输入连接码配对", systemImage: "keyboard") {
-                            showingManualPair = true
-                        }
-                    } label: {
-                        Image(systemName: "qrcode.viewfinder")
-                            .font(.system(size: 16, weight: .semibold))
-                    }
-                    .accessibilityLabel("扫码配对")
-                }
-            }
-            .sheet(isPresented: $showingQuickScanner) {
-                PairView(startWithScanner: true, initialOrigin: servers.activeProfile?.origin)
-            }
-            .sheet(isPresented: $showingManualPair) {
-                PairView(startWithScanner: false, initialOrigin: servers.activeProfile?.origin)
-            }
         }
     }
 
@@ -213,7 +217,7 @@ struct SettingsView: View {
         if let active = servers.activeProfile {
             return "v\(active.serverVersion)"
         }
-        return "v0.4.2"
+        return "v0.4.5"
     }
 
     private func settingsIconBadge(systemImage: String, tint: Color) -> some View {
@@ -479,13 +483,12 @@ struct PairedComputersSettingsView: View {
     }
 }
 
-// MARK: - 3. 技能与扩展（技能 / MCP / 插件 / 子代理）
+// MARK: - 3. 技能与扩展（技能 / MCP / 插件）
 
 enum SkillsHubSegment: String, CaseIterable, Identifiable {
     case skills = "技能"
     case mcp = "MCP"
     case plugins = "插件"
-    case subagents = "子代理"
 
     var id: String { rawValue }
 
@@ -494,7 +497,6 @@ enum SkillsHubSegment: String, CaseIterable, Identifiable {
         case .skills: return "sparkles"
         case .mcp: return "server.rack"
         case .plugins: return "puzzlepiece.extension.fill"
-        case .subagents: return "person.2.badge.gearshape.fill"
         }
     }
 }
@@ -629,10 +631,8 @@ struct SkillsHubSettingsView: View {
             .padding(.vertical, 10)
             .background(Color(.systemGroupedBackground))
 
-            if isLoading && skills.isEmpty && mcpServers.isEmpty && plugins.isEmpty && displaySubagentRoles.isEmpty {
-                Spacer()
-                ProgressView("正在同步\(selectedSegment.rawValue)...")
-                Spacer()
+            if isLoading && skills.isEmpty && mcpServers.isEmpty && plugins.isEmpty {
+                SettingsListSkeletonView(rows: 4)
             } else if authExpired {
                 Spacer()
                 ContentUnavailableView {
@@ -674,8 +674,6 @@ struct SkillsHubSettingsView: View {
                         mcpListContent
                     case .plugins:
                         pluginsListContent
-                    case .subagents:
-                        subagentsListContent
                     }
                 }
                 .listStyle(.insetGrouped)
@@ -688,22 +686,6 @@ struct SkillsHubSettingsView: View {
         .background(Color(.systemGroupedBackground))
         .navigationTitle("技能与扩展")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            if selectedSegment == .subagents && !authExpired {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showingNewSubagentRole = true
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "plus")
-                                .font(.system(size: 13, weight: .bold))
-                            Text("新建角色")
-                                .font(.subheadline.weight(.semibold))
-                        }
-                    }
-                }
-            }
-        }
         .onDisappear {
             dismissKeyboard()
         }
@@ -762,7 +744,6 @@ struct SkillsHubSettingsView: View {
         case .skills: return skills.count
         case .mcp: return mcpServers.count
         case .plugins: return plugins.count
-        case .subagents: return displaySubagentRoles.count
         }
     }
 
@@ -771,7 +752,6 @@ struct SkillsHubSettingsView: View {
         case .skills: return filteredSkills.isEmpty
         case .mcp: return filteredMcpServers.isEmpty
         case .plugins: return filteredPlugins.isEmpty
-        case .subagents: return filteredSubagentRoles.isEmpty
         }
     }
 
@@ -784,15 +764,6 @@ struct SkillsHubSettingsView: View {
             ContentUnavailableView("暂无 MCP 服务", systemImage: "server.rack")
         case .plugins:
             ContentUnavailableView("暂无已安装插件", systemImage: "puzzlepiece.extension")
-        case .subagents:
-            ContentUnavailableView {
-                Label("暂无子代理角色", systemImage: "person.2.badge.gearshape")
-            } actions: {
-                Button("新建子代理角色", systemImage: "plus") {
-                    showingNewSubagentRole = true
-                }
-                .buttonStyle(.borderedProminent)
-            }
         }
     }
 
@@ -1374,12 +1345,17 @@ struct LocalSkillDetailSheet: View {
                     )
 
                     if isLoading {
-                        HStack {
-                            Spacer()
-                            ProgressView("读取 SKILL.md...")
-                            Spacer()
+                        VStack(alignment: .leading, spacing: 10) {
+                            ShimmerBlock(height: 14, cornerRadius: 5)
+                            ShimmerBlock(height: 14, cornerRadius: 5)
+                            ShimmerBlock(width: 240, height: 14, cornerRadius: 5)
+                            ShimmerBlock(width: 180, height: 14, cornerRadius: 5)
                         }
-                        .padding(.vertical, 32)
+                        .padding(14)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(Color(.secondarySystemGroupedBackground))
+                        )
                     } else if let content, !content.content.isEmpty {
                         Text(content.content)
                             .font(.system(.footnote, design: .monospaced))
@@ -1598,7 +1574,7 @@ struct AboutVibeXDetailView: View {
             }
 
             Section("版本与协议信息") {
-                LabeledContent("iOS 客户端版本", value: "v0.4.2")
+                LabeledContent("iOS 客户端版本", value: "v0.4.5")
                 LabeledContent("远程通讯协议", value: "Remote Protocol v1")
                 if let active = servers.activeProfile {
                     LabeledContent("已连接桌面端", value: active.serverName)

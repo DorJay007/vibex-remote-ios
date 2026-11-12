@@ -111,6 +111,8 @@ final class ServerStore {
     private var discoverTask: Task<Void, Never>?
     private var telemetryLoopTask: Task<Void, Never>?
     private var declinedCloudFallbackProfileIds = Set<String>()
+    private var accountSyncedHostIds: [String] = []
+    weak var accountStore: VibeXAccountStore?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -174,6 +176,12 @@ final class ServerStore {
                 if !extraOrigins.contains(tenantUrl) {
                     extraOrigins.append(tenantUrl)
                 }
+            }
+        }
+        for hid in accountSyncedHostIds where !hid.isEmpty && !hid.hasPrefix("host:") && !relayBase.isEmpty {
+            let tenantUrl = "\(relayBase)/t/\(hid)"
+            if !extraOrigins.contains(tenantUrl) {
+                extraOrigins.append(tenantUrl)
             }
         }
         let useCloud = (mode == "cloud")
@@ -633,6 +641,95 @@ final class ServerStore {
         }
         profiles.append(profile)
         persist()
+        if let accountStore {
+            Task { @MainActor in
+                await accountStore.pushLocalHosts(from: self)
+            }
+        }
+    }
+
+    @MainActor
+    func updateAccountSyncedHostIds(_ hostIds: [String]) {
+        self.accountSyncedHostIds = hostIds
+    }
+
+    @MainActor
+    func mergeAccountCloudProfiles(
+        _ cloudProfiles: [VibeXSyncableHostProfile],
+        hostConfigs: [VibeXAccountHostConfigItem]
+    ) {
+        var discoveredAccountHostIds = hostConfigs.map(\.hostId)
+        var didChange = false
+        let relayBase = PairingClient.defaultOfficialRelayBase
+
+        for remote in cloudProfiles {
+            let cleanHostId = remote.hostId?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let cleanHostId, !cleanHostId.isEmpty, !discoveredAccountHostIds.contains(cleanHostId) {
+                discoveredAccountHostIds.append(cleanHostId)
+            }
+            guard let accessToken = remote.credential?.accessToken.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !accessToken.isEmpty
+            else { continue }
+
+            var targetOrigin = Self.normalizeOrigin(remote.origin)
+            if (targetOrigin.isEmpty || targetOrigin.contains("127.0.0.1") || targetOrigin.contains("localhost")),
+               let cleanHostId, !cleanHostId.isEmpty, !relayBase.isEmpty
+            {
+                targetOrigin = "\(relayBase)/t/\(cleanHostId)"
+            }
+            guard !targetOrigin.isEmpty else { continue }
+
+            let existing = profiles.first {
+                $0.id == remote.profileId ||
+                    (cleanHostId != nil && $0.hostId == cleanHostId) ||
+                    $0.origin == targetOrigin
+            }
+            if existing == nil {
+                let profileId = remote.profileId.isEmpty ? UUID().uuidString : remote.profileId
+                try? KeychainStore.save(accessToken, account: profileId)
+                let imported = ServerProfile(
+                    id: profileId,
+                    origin: targetOrigin,
+                    deviceName: "iOS Cloud Sync",
+                    serverVersion: "0.4.5",
+                    protocolVersion: "1",
+                    scopes: ["conversations.read", "conversations.write", "plugins.read"],
+                    hostId: cleanHostId,
+                    hostName: remote.name.isEmpty ? nil : remote.name
+                )
+                profiles.append(imported)
+                didChange = true
+            }
+        }
+
+        self.accountSyncedHostIds = discoveredAccountHostIds
+        if didChange {
+            persist()
+            Task { await refreshActiveTelemetry() }
+        }
+    }
+
+    func exportSyncableProfiles() -> [VibeXSyncableHostProfile] {
+        let nowIso = ISO8601DateFormatter().string(from: Date())
+        return profiles.compactMap { profile in
+            guard let token = KeychainStore.read(account: profile.id), !token.isEmpty else {
+                return nil
+            }
+            return VibeXSyncableHostProfile(
+                syncKey: profile.hostId ?? profile.id,
+                profileId: profile.id,
+                hostId: profile.hostId,
+                name: profile.displayHost,
+                origin: profile.origin,
+                provisionKind: "http",
+                credential: VibeXSyncableHostCredential(
+                    deviceId: profile.id,
+                    accessToken: token
+                ),
+                lastConnectedAt: nowIso,
+                updatedAt: nowIso
+            )
+        }
     }
 
     static func sanitizeError(_ error: Error) -> String {
@@ -715,6 +812,14 @@ final class ServerStore {
         KeychainStore.delete(account: profile.id)
         profiles.removeAll { $0.id == profile.id }
         persist()
+        if let accountStore {
+            let pid = profile.id
+            let hid = profile.hostId
+            let orig = profile.origin
+            Task { @MainActor in
+                await accountStore.deleteCloudSavedHost(profileId: pid, hostId: hid, origin: orig)
+            }
+        }
     }
 
     private func persist() {

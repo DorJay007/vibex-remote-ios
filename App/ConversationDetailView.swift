@@ -8,6 +8,7 @@ struct ConversationDetailView: View {
     @State private var panel: DetailPanel?
     @State private var created: ConversationListItem?
     @State private var diffChange: FileChangeItem?
+    @AppStorage("vibex.customRelayModels") private var customRelayModelsJSON: String = "[]"
 
     // Scroll safe-zone & floating bottom indicator state
     @State private var distanceFromBottom: CGFloat = 0
@@ -351,6 +352,20 @@ struct ConversationDetailView: View {
                 menu = nil
                 Task { await model.set(option, to: choice) }
             },
+            onAddCustomModel: { rawModel in
+                let trimmed = rawModel.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return }
+                var list = customRelayModels
+                if !list.contains(trimmed) {
+                    list.insert(trimmed, at: 0)
+                    if let data = try? JSONEncoder().encode(list),
+                       let str = String(data: data, encoding: .utf8) {
+                        customRelayModelsJSON = str
+                    }
+                }
+                menu = nil
+                Task { await model.setCustomModel(trimmed) }
+            },
             pickAccess: { id in
                 guard let mode = model.accessModes.first(where: { $0.id == id }) else { return }
                 menu = nil
@@ -371,8 +386,15 @@ struct ConversationDetailView: View {
         )
     }
 
+    private var customRelayModels: [String] {
+        guard let data = customRelayModelsJSON.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode([String].self, from: data)
+        else { return [] }
+        return decoded.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
     private var modelChoices: [PromptChoice] {
-        model.modelOptions.flatMap { option in
+        var choices: [PromptChoice] = model.modelOptions.flatMap { option in
             option.choices.map {
                 PromptChoice(
                     id: option.key + "|" + $0.id,
@@ -383,6 +405,27 @@ struct ConversationDetailView: View {
                 )
             }
         }
+        let optionKey = model.modelOptions.first?.key ?? "model"
+        let currentVal: String? = {
+            guard let opt = model.modelOptions.first, case .string(let s) = model.value(of: opt) else { return nil }
+            return s
+        }()
+        for custom in customRelayModels {
+            let choiceID = "\(optionKey)|\(custom)"
+            if !choices.contains(where: { $0.id == choiceID || $0.title == custom }) {
+                choices.insert(
+                    PromptChoice(
+                        id: choiceID,
+                        title: custom,
+                        tag: "自定义 / 中转",
+                        agentID: model.conversation.agent_id,
+                        selected: currentVal == custom
+                    ),
+                    at: 0
+                )
+            }
+        }
+        return choices
     }
 
     private var otherModelGroups: [PromptGroup] {
@@ -401,6 +444,13 @@ struct ConversationDetailView: View {
         for option in model.modelOptions {
             if let choice = option.choices.first(where: { option.key + "|" + $0.id == id }) {
                 return (option, choice)
+            }
+        }
+        if let option = model.modelOptions.first {
+            let prefix = option.key + "|"
+            if id.hasPrefix(prefix) {
+                let raw = String(id.dropFirst(prefix.count))
+                return (option, CatalogAgent.makeCustomChoice(raw))
             }
         }
         return nil
@@ -571,7 +621,7 @@ struct ConversationDetailView: View {
         } else if let message = model.loadError {
             LoadFailureView(message: message) { Task { await model.reload() } }
         } else {
-            ProgressView().frame(maxHeight: .infinity)
+            ConversationTimelineSkeletonView()
         }
     }
 

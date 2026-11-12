@@ -64,7 +64,9 @@ struct CollaborationDetailSheet: View {
                 Picker("详情", selection: $selectedTab) {
                     Text(item.isGroup ? "成员" : "定制").tag(Tab.primary)
                     Text("记忆与收藏").tag(Tab.memoryAndCollection)
-                    Text(item.isGroup ? "设置" : "会话").tag(Tab.settings)
+                    if item.isGroup {
+                        Text("设置").tag(Tab.settings)
+                    }
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal, 16)

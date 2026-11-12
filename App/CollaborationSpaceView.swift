@@ -1,12 +1,19 @@
 import CompanionCore
 import SwiftUI
 
+enum CollabNavRoute: Hashable {
+    case chat(threadID: String)
+    case detailedSession(ConversationListItem)
+}
+
 struct CollaborationSpaceView: View {
     let client: HostClient
+    var onChromeHiddenChange: ((Bool) -> Void)? = nil
 
     @State private var projects: [ProjectSummary] = []
     @State private var selectedProjectID: String = ""
     @State private var sidebarItems: [CollabSidebarItem] = []
+    @State private var cachedSidebarByThreadID: [String: CollabSidebarItem] = [:]
     @State private var contactGroups: [CollabContactGroup] = []
     @State private var spaces: [CollabSpaceSummary] = []
     @State private var loading = true
@@ -14,7 +21,7 @@ struct CollaborationSpaceView: View {
     @State private var searchQuery = ""
     @State private var filterKind: FilterKind = .primary
     @State private var collapsedGroupIDs: Set<String> = []
-    @State private var path = NavigationPath()
+    @State private var path: [CollabNavRoute] = []
 
     // Modals & Alerts
     @State private var showingCreateAssistant = false
@@ -138,20 +145,28 @@ struct CollaborationSpaceView: View {
                         .disabled(activeWorkspaceID == nil)
                     }
                 }
-                .navigationDestination(for: CollabSidebarItem.self) { item in
-                    if let workspaceID = activeWorkspaceID {
-                        CollaborationChatView(
-                            client: client,
-                            workspaceID: workspaceID,
-                            item: item,
-                            allSidebarItems: sidebarItems,
-                            contactGroups: contactGroups,
-                            onChanged: { await reload() }
-                        )
+                .navigationDestination(for: CollabNavRoute.self) { route in
+                    switch route {
+                    case .chat(let threadID):
+                        if let workspaceID = activeWorkspaceID,
+                           let item = sidebarItems.first(where: { $0.threadId == threadID }) ?? cachedSidebarByThreadID[threadID] {
+                            CollaborationChatView(
+                                client: client,
+                                workspaceID: workspaceID,
+                                item: item,
+                                allSidebarItems: sidebarItems,
+                                contactGroups: contactGroups,
+                                onOpenConversation: { conv in
+                                    if path.last != .detailedSession(conv) {
+                                        path.append(.detailedSession(conv))
+                                    }
+                                },
+                                onChanged: { await reload() }
+                            )
+                        }
+                    case .detailedSession(let conv):
+                        ConversationDetailView(client: client, conversation: conv)
                     }
-                }
-                .navigationDestination(for: ConversationListItem.self) { conv in
-                    ConversationDetailView(client: client, conversation: conv)
                 }
         }
         .sheet(isPresented: $showingCreateAssistant) {
@@ -192,6 +207,12 @@ struct CollaborationSpaceView: View {
                 }
                 renamingGroup = nil
             }
+        }
+        .onAppear {
+            onChromeHiddenChange?(!path.isEmpty)
+        }
+        .onChange(of: path.count) { _, count in
+            onChromeHiddenChange?(count > 0)
         }
         .task {
             while !Task.isCancelled {
@@ -243,7 +264,10 @@ struct CollaborationSpaceView: View {
                 title: item.displayName,
                 subtitle: item.lastMessage?.preview ?? (item.isGroup ? "群组" : "私聊"),
                 icon: item.isGroup ? "person.3.fill" : "person.crop.circle.fill",
-                action: { path.append(item) }
+                action: {
+                    cachedSidebarByThreadID[item.threadId] = item
+                    path.append(.chat(threadID: item.threadId))
+                }
             )
         }
     }
@@ -251,7 +275,7 @@ struct CollaborationSpaceView: View {
     @ViewBuilder
     private var content: some View {
         if loading && sidebarItems.isEmpty && errorMessage == nil {
-            ProgressView()
+            CollaborationListSkeletonView()
         } else if let errorMessage, sidebarItems.isEmpty {
             LoadFailureView(message: errorMessage) { Task { await reload() } }
         } else {
@@ -269,7 +293,7 @@ struct CollaborationSpaceView: View {
 
                 if let supervisor = supervisorItem {
                     Section("主管") {
-                        NavigationLink(value: supervisor) {
+                        NavigationLink(value: CollabNavRoute.chat(threadID: supervisor.threadId)) {
                             CollabContactRow(item: supervisor, isSupervisorSlot: true)
                         }
                         .modifier(rowActions(for: supervisor))
@@ -294,7 +318,7 @@ struct CollaborationSpaceView: View {
                         Section {
                             if !isCollapsed {
                                 ForEach(groupEntries) { item in
-                                    NavigationLink(value: item) {
+                                    NavigationLink(value: CollabNavRoute.chat(threadID: item.threadId)) {
                                         CollabContactRow(item: item, isSupervisorSlot: false)
                                     }
                                     .modifier(rowActions(for: item))
@@ -349,7 +373,7 @@ struct CollaborationSpaceView: View {
                     if !ungrouped.isEmpty {
                         Section("未分组 (\(ungrouped.count))") {
                             ForEach(ungrouped) { item in
-                                NavigationLink(value: item) {
+                                NavigationLink(value: CollabNavRoute.chat(threadID: item.threadId)) {
                                     CollabContactRow(item: item, isSupervisorSlot: false)
                                 }
                                 .modifier(rowActions(for: item))
@@ -363,7 +387,7 @@ struct CollaborationSpaceView: View {
                     if !groupItems.isEmpty {
                         Section("群组 (\(groupItems.count))") {
                             ForEach(groupItems) { item in
-                                NavigationLink(value: item) {
+                                NavigationLink(value: CollabNavRoute.chat(threadID: item.threadId)) {
                                     CollabContactRow(item: item, isSupervisorSlot: false)
                                 }
                                 .modifier(rowActions(for: item))
@@ -374,7 +398,7 @@ struct CollaborationSpaceView: View {
                     if !directItems.isEmpty {
                         Section("助手 (\(directItems.count))") {
                             ForEach(directItems) { item in
-                                NavigationLink(value: item) {
+                                NavigationLink(value: CollabNavRoute.chat(threadID: item.threadId)) {
                                     CollabContactRow(item: item, isSupervisorSlot: false)
                                 }
                                 .modifier(rowActions(for: item))
@@ -417,7 +441,11 @@ struct CollaborationSpaceView: View {
             async let sidebarTask = client.collabSidebar(workspaceID: workspaceID)
             async let groupsTask = client.collabContactGroups(workspaceID: workspaceID)
             async let spacesTask = client.collabSpaces(workspaceID: workspaceID)
-            sidebarItems = try await sidebarTask
+            let fetchedSidebar = try await sidebarTask
+            sidebarItems = fetchedSidebar
+            for item in fetchedSidebar {
+                cachedSidebarByThreadID[item.threadId] = item
+            }
             contactGroups = (try? await groupsTask) ?? []
             spaces = (try? await spacesTask) ?? []
             errorMessage = nil

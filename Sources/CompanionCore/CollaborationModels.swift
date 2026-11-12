@@ -330,6 +330,11 @@ public struct CollabSidebarItem: Decodable, Identifiable, Equatable, Hashable, S
 
     public func hash(into hasher: inout Hasher) {
         hasher.combine(threadId)
+        hasher.combine(name)
+        hasher.combine(tagColor)
+        hasher.combine(unreadCount)
+        hasher.combine(memberCount)
+        hasher.combine(groupId)
     }
 
     private enum CodingKeys: String, CodingKey {

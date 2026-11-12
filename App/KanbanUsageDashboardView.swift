@@ -78,9 +78,7 @@ struct KanbanUsageDashboardView: View {
             if activeTab == .plan {
                 planTabContent
             } else if isLoading && statistics == nil {
-                Spacer()
-                ProgressView("正在加载计量统计…")
-                Spacer()
+                UsageDashboardSkeletonView()
             } else if let errorMessage, statistics == nil {
                 Spacer()
                 LoadFailureView(message: errorMessage) {
@@ -672,12 +670,12 @@ struct KanbanUsageDashboardView: View {
                     }
 
                     if isLoadingPlan && planUsageByAgent[selectedPlanAgent.id] == nil {
-                        HStack {
-                            Spacer()
-                            ProgressView("正在读取额度…")
-                            Spacer()
+                        VStack(alignment: .leading, spacing: 10) {
+                            ShimmerBlock(width: 140, height: 15, cornerRadius: 5)
+                            ShimmerBlock(height: 12, cornerRadius: 6)
+                            ShimmerBlock(width: 190, height: 12, cornerRadius: 5)
                         }
-                        .padding(.vertical, 24)
+                        .padding(.vertical, 10)
                     } else if let response = planUsageByAgent[selectedPlanAgent.id] {
                         switch response {
                         case .ok(let usage):

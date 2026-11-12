@@ -7,6 +7,7 @@ struct CollaborationChatView: View {
     let item: CollabSidebarItem
     let allSidebarItems: [CollabSidebarItem]
     let contactGroups: [CollabContactGroup]
+    let onOpenConversation: (ConversationListItem) -> Void
     let onChanged: () async -> Void
 
     @State private var messages: [CollabSpaceMessage] = []
@@ -25,7 +26,6 @@ struct CollaborationChatView: View {
 
     // Sheets & navigation
     @State private var showingDetails = false
-    @State private var openedConversation: ConversationListItem?
     @State private var cardAnswerDraft: [String: String] = [:]
     @State private var headerReactionTrigger: Int = 0
 
@@ -112,22 +112,12 @@ struct CollaborationChatView: View {
                 .buttonStyle(.plain)
             }
             ToolbarItem(placement: .primaryAction) {
-                HStack(spacing: 12) {
-                    if item.isDirect, let member = item.member {
-                        Button {
-                            openMemberSession(memberID: member.resolvedIdentityId, fallbackConvID: member.conversationId, title: item.displayName)
-                        } label: {
-                            Image(systemName: "terminal")
-                        }
-                        .accessibilityLabel("打开助手会话")
-                    }
-                    Button {
-                        showingDetails = true
-                    } label: {
-                        Image(systemName: item.isGroup ? "person.3" : "slider.horizontal.3")
-                    }
-                    .accessibilityLabel(item.isGroup ? "群组详情" : "助手详情")
+                Button {
+                    showingDetails = true
+                } label: {
+                    Image(systemName: item.isGroup ? "person.3" : "slider.horizontal.3")
                 }
+                .accessibilityLabel(item.isGroup ? "群组详情" : "助手详情")
             }
         }
         .sheet(isPresented: $showingDetails) {
@@ -140,16 +130,16 @@ struct CollaborationChatView: View {
                 contactGroups: contactGroups,
                 onOpenConversation: { conv in
                     showingDetails = false
-                    openedConversation = conv
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(220))
+                        onOpenConversation(conv)
+                    }
                 },
                 onChanged: {
                     await reload()
                     await onChanged()
                 }
             )
-        }
-        .navigationDestination(item: $openedConversation) { conv in
-            ConversationDetailView(client: client, conversation: conv)
         }
         .onDisappear {
             dismissKeyboard()
@@ -168,9 +158,7 @@ struct CollaborationChatView: View {
     @ViewBuilder
     private var messageStream: some View {
         if loading && messages.isEmpty && errorMessage == nil {
-            Spacer()
-            ProgressView()
-            Spacer()
+            CollaborationChatSkeletonView()
         } else if let errorMessage, messages.isEmpty {
             Spacer()
             LoadFailureView(message: errorMessage) { Task { await reload() } }
@@ -315,6 +303,7 @@ struct CollaborationChatView: View {
                                     }
                                 }
                             }
+                            .fixedSize(horizontal: false, vertical: true)
                         }
                         HStack(spacing: 8) {
                             TextField(
@@ -396,6 +385,7 @@ struct CollaborationChatView: View {
                     }
                     .padding(.horizontal, 14)
                 }
+                .fixedSize(horizontal: false, vertical: true)
             }
 
             if let errorMessage, !messages.isEmpty {
@@ -419,6 +409,7 @@ struct CollaborationChatView: View {
                                     }
                                 }
                             }
+                            .fixedSize(horizontal: false, vertical: true)
                         }
                     } label: {
                         Image(systemName: delaySeconds > 0 ? "clock.badge.checkmark.fill" : "clock")
@@ -656,7 +647,7 @@ struct CollaborationChatView: View {
         ]),
         let item = try? JSONDecoder().decode(ConversationListItem.self, from: data)
         else { return }
-        openedConversation = item
+        onOpenConversation(item)
     }
 }
 

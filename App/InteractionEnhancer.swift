@@ -121,10 +121,7 @@ struct GlobalInteractionInstaller: UIViewRepresentable {
         private func enableInteractivePopInHierarchy(from root: UIViewController?) {
             guard let root else { return }
             if let nav = root as? UINavigationController {
-                nav.interactivePopGestureRecognizer?.isEnabled = true
-                if nav.viewControllers.count > 1 {
-                    nav.interactivePopGestureRecognizer?.delegate = nil
-                }
+                nav.interactivePopGestureRecognizer?.isEnabled = nav.viewControllers.count > 1
             }
             for child in root.children {
                 enableInteractivePopInHierarchy(from: child)

@@ -143,7 +143,7 @@ struct FilesView: View {
         } else if let message = list.errorMessage {
             LoadFailureView(message: message) { Task { await reload() } }
         } else {
-            ProgressView()
+            FileTreeSkeletonView()
         }
     }
 

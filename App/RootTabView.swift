@@ -45,6 +45,8 @@ struct RootTabView: View {
     @State private var selection: AppTab = .conversations
     @State private var attentionCenter = CompanionAttentionCenter()
     @State private var isConversationsChromeHidden = false
+    @State private var isBoardChromeHidden = false
+    @State private var isSpaceChromeHidden = false
     @State private var isLaunchRevealed = false
     @State private var isKeyboardVisible = false
 
@@ -55,8 +57,16 @@ struct RootTabView: View {
 
     private var shouldShowBottomBar: Bool {
         if isKeyboardVisible { return false }
-        if selection == .conversations && isConversationsChromeHidden { return false }
-        return true
+        switch selection {
+        case .conversations:
+            return !isConversationsChromeHidden
+        case .board:
+            return !isBoardChromeHidden
+        case .space:
+            return !isSpaceChromeHidden
+        case .settings:
+            return true
+        }
     }
 
     private var isBottomBarRevealed: Bool {
@@ -90,11 +100,29 @@ struct RootTabView: View {
                 .allowsHitTesting(selection == .conversations)
 
                 if selection == .board {
-                    RequiresServer(selection: $selection) { BoardView(client: $0) }
-                        .transition(.opacity)
+                    RequiresServer(selection: $selection) {
+                        BoardView(
+                            client: $0,
+                            onChromeHiddenChange: { hidden in
+                                withAnimation(.smooth(duration: 0.2)) {
+                                    isBoardChromeHidden = hidden
+                                }
+                            }
+                        )
+                    }
+                    .transition(.opacity)
                 } else if selection == .space {
-                    RequiresServer(selection: $selection) { CollaborationSpaceView(client: $0) }
-                        .transition(.opacity)
+                    RequiresServer(selection: $selection) {
+                        CollaborationSpaceView(
+                            client: $0,
+                            onChromeHiddenChange: { hidden in
+                                withAnimation(.smooth(duration: 0.2)) {
+                                    isSpaceChromeHidden = hidden
+                                }
+                            }
+                        )
+                    }
+                    .transition(.opacity)
                 } else if selection == .settings {
                     SettingsView()
                         .transition(.opacity)
