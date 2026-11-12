@@ -125,15 +125,6 @@ struct VibeXAccountOverview: Codable, Equatable, Sendable {
     var assignedRelayServer: VibeXAssignedRelayServer?
 }
 
-struct VibeXDeviceLogin: Codable, Equatable, Sendable {
-    var requestId: String
-    var verifier: String
-    var userCode: String
-    var verifyUrl: String
-    var expiresIn: Int
-    var interval: Int
-}
-
 struct VibeXSyncableHostCredential: Codable, Equatable, Sendable {
     var deviceId: String?
     var accessToken: String
@@ -159,6 +150,9 @@ struct VibeXSyncableHostProfile: Codable, Identifiable, Equatable, Sendable {
 @MainActor
 final class VibeXAccountStore {
     static let siteBaseURL = "https://vibex.xforever.xin"
+    static let termsPath = "/docs/service"
+    /// The site has no privacy page yet; this is where it will be published.
+    static let privacyPolicyPath = "/docs/privacy"
     private static let tokenAccountKey = "vibex.account.token"
     private static let cachedOverviewKey = "vibex.account.cached_overview"
     private static let requiresLoginKey = "vibex.account.requires_login"
@@ -173,9 +167,8 @@ final class VibeXAccountStore {
     /// Set when loading the account's desktops failed, so an empty list is not mistaken for an
     /// account without desktops.
     private(set) var desktopsSyncFailed: Bool = false
-    private(set) var startingLogin: Bool = false
+    private(set) var signingIn: Bool = false
     private(set) var signingOut: Bool = false
-    private(set) var loginState: VibeXDeviceLogin?
     private(set) var authError: String?
     private(set) var lastSyncedAt: Date?
     /// Increments when a device login finishes and the account's desktops are synced.
@@ -185,7 +178,6 @@ final class VibeXAccountStore {
         didSet { defaults.set(requiresLogin, forKey: Self.requiresLoginKey) }
     }
 
-    private var loginPollTask: Task<Void, Never>?
     weak var attachedServerStore: ServerStore?
 
     var isSignedIn: Bool {
@@ -262,118 +254,73 @@ final class VibeXAccountStore {
         #endif
     }
 
-    // MARK: - Device Login Flow
+    // MARK: - In-App Login
 
-    func startLogin() async {
-        startingLogin = true
-        authError = nil
-        defer { startingLogin = false }
+    private static var deviceName: String {
+        let name = UIDevice.current.name
+        return name.isEmpty ? "VibeX iOS" : name
+    }
 
-        #if canImport(UIKit)
-        let devName = UIDevice.current.name
-        #else
-        let devName = "VibeX iOS"
-        #endif
+    func sendLoginCode(to target: String) async throws {
+        try await AccountLoginClient(siteBase: Self.siteBaseURL).sendLoginCode(to: target)
+    }
 
-        do {
-            let login: VibeXDeviceLogin = try await requestJSON(
-                path: "/api/auth/desktop/start",
-                method: "POST",
-                body: [
-                    "deviceName": devName.isEmpty ? "VibeX iOS" : devName,
-                    "hostId": "",
-                    "nextPath": "/account"
-                ],
-                authenticated: false
-            )
-            self.loginState = login
-            if let verifyURL = URL(string: login.verifyUrl) {
-                #if canImport(UIKit)
-                await UIApplication.shared.open(verifyURL)
-                #endif
-            }
-            startPollingLogin(login)
-        } catch {
-            authError = describeAccountError(error)
+    /// Signs into the site on a private cookie session and approves this device's token with it.
+    func signIn(_ credential: AccountLoginCredential) async throws {
+        signingIn = true
+        defer { signingIn = false }
+        let client = AccountLoginClient(siteBase: Self.siteBaseURL)
+        try await client.signIn(credential)
+        let login = try await client.startDeviceLogin(deviceName: Self.deviceName)
+        try await client.approve(login)
+        let token = try await client.approvedToken(for: login, maxAttempts: 5)
+        await completeSignIn(token: token)
+    }
+
+    /// The provider signs in inside the auth sheet and lands on the site's authorize page; the token is polled
+    /// meanwhile. Closing the sheet abandons the login without an error.
+    func signIn(with provider: AccountOAuthProvider) async throws {
+        signingIn = true
+        defer { signingIn = false }
+        let client = AccountLoginClient(siteBase: Self.siteBaseURL)
+        let login = try await client.startDeviceLogin(deviceName: Self.deviceName)
+        guard let url = client.oauthStartURL(provider, for: login) else {
+            throw AccountAuthError(code: "oauth_failed")
+        }
+        let attempts = max(login.expiresIn / max(login.interval, 1), 1)
+        let poll = Task { try await client.approvedToken(for: login, maxAttempts: attempts) }
+        let sheet = OAuthSheet()
+        guard sheet.present(url, onUserClose: { poll.cancel() }) else {
+            poll.cancel()
+            throw AccountAuthError(code: "oauth_failed")
+        }
+        let result = await poll.result
+        sheet.dismiss()
+        switch result {
+        case .success(let token):
+            await completeSignIn(token: token)
+        case .failure(let error):
+            if error is CancellationError { return }
+            throw error
         }
     }
 
-    func reopenVerifyURL() {
-        guard let urlString = loginState?.verifyUrl, let url = URL(string: urlString) else { return }
-        #if canImport(UIKit)
-        UIApplication.shared.open(url)
-        #endif
+    private func completeSignIn(token: String) async {
+        saveToken(token)
+        authError = nil
+        requiresLogin = false
+        await refreshAll()
+        completedSignIns += 1
     }
 
     /// A computer paired with a connection code lets the user in without an account.
     func waiveLoginRequirement() {
- requiresLogin = false
-    }
-
-    func cancelLogin() {
-        loginPollTask?.cancel()
-        loginPollTask = nil
-        loginState = nil
-    }
-
-    private func startPollingLogin(_ login: VibeXDeviceLogin) {
-        loginPollTask?.cancel()
-        let expiresAt = Date().addingTimeInterval(TimeInterval(max(login.expiresIn, 30)))
-        let intervalSec = max(login.interval, 2)
-        loginPollTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: UInt64(intervalSec) * 1_000_000_000)
-                guard let self, !Task.isCancelled else { return }
-                if Date() >= expiresAt {
-                    self.loginState = nil
-                    self.authError = "登录验证码已过期，请重新发起登录"
-                    return
-                }
-                do {
-                    struct PollResponse: Decodable {
-                        var status: String
-                        var token: String?
-                    }
-                    let resp: PollResponse = try await self.requestJSON(
-                        path: "/api/auth/desktop/token",
-                        method: "POST",
-                        body: [
-                            "requestId": login.requestId,
-                            "verifier": login.verifier
-                        ],
-                        authenticated: false
-                    )
-                    if resp.status == "approved", let tok = resp.token, !tok.isEmpty {
-                        self.saveToken(tok)
-                        self.loginState = nil
-                        self.authError = nil
-                        self.requiresLogin = false
-                        await self.refreshAll()
-                        self.completedSignIns += 1
-                        return
-                    } else if resp.status != "pending" {
-                        self.loginState = nil
-                        self.authError = resp.status == "denied"
-                            ? "已拒绝本次登录授权"
-                            : "登录验证码已过期或失效，请重试"
-                        return
-                    }
-                } catch let err as AccountHTTPError where err.code == "network" {
-                    continue
-                } catch {
-                    self.loginState = nil
-                    self.authError = self.describeAccountError(error)
-                    return
-                }
-            }
-        }
+        requiresLogin = false
     }
 
     func signOut() async {
         signingOut = true
         defer { signingOut = false }
-        loginPollTask?.cancel()
-        loginState = nil
         let oldToken = token
         saveToken(nil)
         overview = nil
@@ -548,8 +495,6 @@ final class VibeXAccountStore {
             switch httpErr.code {
             case "network": return "无法连接到 VibeX 账号服务，请检查网络后重试"
             case "signed_out": return "登录状态已失效，请重新登录"
-            case "expired", "invalid": return "登录验证码已过期，请重试"
-            case "denied": return "登录请求已被拒绝"
             default: return "账号服务请求失败（\(httpErr.code)）"
             }
         }
@@ -641,6 +586,7 @@ struct VibeXAccountSettingsView: View {
     @Environment(ServerStore.self) private var servers
     @Environment(AppAppearanceStore.self) private var appearance
     @State private var copiedId = false
+    @State private var showsLogin = false
 
     private var nowIso: String {
         account.overview?.serverNow ?? ISO8601DateFormatter().string(from: Date())
@@ -693,8 +639,6 @@ struct VibeXAccountSettingsView: View {
                     AccountCardSkeletonView()
                 } else if account.isSignedIn, let user = account.user {
                     signedInProfileCard(user: user)
-                } else if let login = account.loginState {
-                    deviceLoginWaitingCard(login: login)
                 } else {
                     signedOutCard
                 }
@@ -883,6 +827,9 @@ struct VibeXAccountSettingsView: View {
             }
         }
         .navigationTitle("VibeX 账号")
+        .navigationDestination(isPresented: $showsLogin) {
+            LoginView(allowsCodePairing: false)
+        }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if account.isSignedIn {
@@ -973,46 +920,6 @@ struct VibeXAccountSettingsView: View {
         .padding(.vertical, 4)
     }
 
-    private func deviceLoginWaitingCard(login: VibeXDeviceLogin) -> some View {
-        VStack(spacing: 12) {
-            ProgressView()
-            Text("请在浏览器中完成 VibeX 账号登录授权")
-                .font(.subheadline.weight(.semibold))
-                .multilineTextAlignment(.center)
-            if !login.userCode.isEmpty {
-                HStack(spacing: 6) {
-                    Text("设备验证码：")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(login.userCode)
-                        .font(.subheadline.monospaced().weight(.bold))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(Color.accentColor.opacity(0.12))
-                        )
-                        .foregroundStyle(Color.accentColor)
-                }
-            }
-            HStack(spacing: 12) {
-                Button("取消") {
-                    account.cancelLogin()
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-
-                Button("重新打开授权页") {
-                    account.reopenVerifyURL()
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 10)
-    }
-
     private var signedOutCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
@@ -1033,21 +940,13 @@ struct VibeXAccountSettingsView: View {
                 }
             }
             Button {
-                Task { await account.startLogin() }
+                showsLogin = true
             } label: {
-                HStack {
-                    Spacer()
-                    if account.startingLogin {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-                    Text("浏览器授权登录")
-                        .font(.subheadline.weight(.semibold))
-                    Spacer()
-                }
+                Text("登录")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(account.startingLogin)
         }
         .padding(.vertical, 6)
     }

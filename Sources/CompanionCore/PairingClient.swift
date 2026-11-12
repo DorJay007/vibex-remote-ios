@@ -85,6 +85,8 @@ public enum PairingError: Error, Equatable, LocalizedError {
     case invitationExpired
     case mobileDeviceConflict(existingDeviceName: String)
     case unreachable
+    /// Every origin in the invitation is on the Host's LAN and none answered.
+    case hostCloudServiceOff
     case accountMismatch
     case accountTokenInvalid
     case hostAccountSignedOut
@@ -120,6 +122,8 @@ public enum PairingError: Error, Equatable, LocalizedError {
             return "该电脑已连接移动设备「\(existingDeviceName)」，同一台电脑仅支持一台手机远程连接"
         case .unreachable:
             return "无法连接到电脑，请确认电脑端在线并已开启远程连接"
+        case .hostCloudServiceOff:
+            return "电脑未开启云服务。请连接与电脑相同的 Wi-Fi，或在电脑上登录 VibeX 账号"
         case .accountMismatch:
             return "这台电脑登录的是其他 VibeX 账号"
         case .accountTokenInvalid:
@@ -330,12 +334,11 @@ public struct PairingClient: Sendable {
             let localSubnets = Self.localPrivateIPv4Subnets()
             if localSubnets.isEmpty {
                 // On 5G cellular (no Wi-Fi interface), private LAN IPs are guaranteed unreachable: try cloud origins first!
-                let cloudFirst = origins.filter { $0.value.lowercased().hasPrefix("https://") || $0.value.contains("/t/") }
-                let lanRest = origins.filter { !($0.value.lowercased().hasPrefix("https://") || $0.value.contains("/t/")) }
-                origins = cloudFirst + lanRest
+                origins = origins.filter(\.isCloud) + origins.filter { !$0.isCloud }
             }
         }
-        guard !origins.isEmpty else { throw PairingError.unreachable }
+        let unreachable: PairingError = invitation.offersOnlyLocalOrigins ? .hostCloudServiceOff : .unreachable
+        guard !origins.isEmpty else { throw unreachable }
         for origin in origins {
             do {
                 return try await redeem(
@@ -382,7 +385,7 @@ public struct PairingClient: Sendable {
                 }
             }
         }
-        throw PairingError.unreachable
+        throw unreachable
     }
 
     /// `accountToken` asks the Host to verify that this phone and the desktop share one VibeX account.

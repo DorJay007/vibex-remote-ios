@@ -95,10 +95,11 @@ private let capabilitiesJSON = """
 private func invitationText(
     preset: String = "companion",
     expiresAt: String = "2999-01-01T00:00:00Z",
+    hostId: String = "h",
     origins: [String]
 ) -> String {
     let reach = origins.map { "{\"origin\":\"\($0)\",\"kind\":\"lan\"}" }.joined(separator: ",")
-    return "vibex-pairing:{\"version\":1,\"host_id\":\"h\",\"preset\":\"\(preset)\",\"expires_at\":\"\(expiresAt)\",\"pairing_id\":\"p\",\"pairing_token\":\"secret\",\"reachability\":[\(reach)]}"
+    return "vibex-pairing:{\"version\":1,\"host_id\":\"\(hostId)\",\"preset\":\"\(preset)\",\"expires_at\":\"\(expiresAt)\",\"pairing_id\":\"p\",\"pairing_token\":\"secret\",\"reachability\":[\(reach)]}"
 }
 
 private final class FlakyTransport: HttpTransport, @unchecked Sendable {
@@ -149,6 +150,34 @@ private final class FlakyTransport: HttpTransport, @unchecked Sendable {
     let session = try await PairingClient(transport: transport).redeem(invitation: invitation)
     #expect(session.origin.value == "http://192.168.1.3:17891")
     #expect(transport.urls.first?.hasPrefix("http://192.168.1.2") == true)
+}
+
+private struct OfflineTransport: HttpTransport {
+    func execute(
+        method: String, url: String, headers: [String: String], body: Data?
+    ) async throws -> HttpExchange {
+        throw URLError(.timedOut)
+    }
+}
+
+@Test func lanOnlyInvitationThatNobodyAnswersSaysTheCloudServiceIsOff() async throws {
+    let invitation = try PairingInvitation.parse(
+        invitationText(hostId: "", origins: ["http://127.0.0.1:17891", "http://192.168.1.2:17891", "http://10.0.0.5:17891"])
+    )
+    #expect(invitation.offersOnlyLocalOrigins)
+    await #expect(throws: PairingError.hostCloudServiceOff) {
+        try await PairingClient(transport: OfflineTransport()).redeem(invitation: invitation)
+    }
+}
+
+@Test func invitationWithACloudOriginStaysGenericallyUnreachable() async throws {
+    let invitation = try PairingInvitation.parse(
+        invitationText(hostId: "", origins: ["http://192.168.1.2:17891", "https://vibex.xforever.xin/t/host-1"])
+    )
+    #expect(!invitation.offersOnlyLocalOrigins)
+    await #expect(throws: PairingError.unreachable) {
+        try await PairingClient(transport: OfflineTransport()).redeem(invitation: invitation)
+    }
 }
 
 @Test func invitationParseRejectsGarbage() {

@@ -3,6 +3,11 @@ import Foundation
 public struct HostOrigin: Equatable, Sendable {
     public let value: String
 
+    /// Published (`https://`) and relay (`/t/`) origins reach the Host from any network; others are LAN-only.
+    public var isCloud: Bool {
+        value.lowercased().hasPrefix("https://") || value.contains("/t/")
+    }
+
     public func resolve(_ path: String) -> String {
         value + (path.hasPrefix("/") ? path : "/" + path)
     }

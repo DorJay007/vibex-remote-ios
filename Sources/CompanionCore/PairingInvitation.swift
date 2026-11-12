@@ -5,6 +5,10 @@ public struct PairingInvitation: Decodable, Equatable, Sendable {
     public struct Reachability: Decodable, Equatable, Sendable {
         public let origin: String
         public let kind: String
+
+        func isCloud(_ parsed: HostOrigin) -> Bool {
+            parsed.isCloud || kind.lowercased() == "published"
+        }
     }
 
     public static let prefix = "vibex-pairing:"
@@ -45,10 +49,16 @@ public struct PairingInvitation: Decodable, Equatable, Sendable {
             guard let origin = try? HostOrigin.parse(item.origin),
                   !Self.isLoopback(origin.value)
             else { return nil }
-            let isCloudOrHttps = origin.value.lowercased().hasPrefix("https://") || item.kind.lowercased() == "published"
-            return (origin, isCloudOrHttps)
+            return (origin, item.isCloud(origin))
         }
         return parsed.filter { !$0.1 }.map(\.0) + parsed.filter(\.1).map(\.0)
+    }
+
+    /// The Host published no cloud origin, so only a phone on its LAN can reach it.
+    public var offersOnlyLocalOrigins: Bool {
+        !reachability.contains { item in
+            (try? HostOrigin.parse(item.origin)).map(item.isCloud) ?? false
+        }
     }
 
     private static func isLoopback(_ origin: String) -> Bool {
