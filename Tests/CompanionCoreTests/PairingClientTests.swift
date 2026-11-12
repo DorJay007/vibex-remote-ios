@@ -283,6 +283,18 @@ private let pendingConnectJSON = "{\"request_id\":\"req-1\",\"host_id\":\"h1\",\
     }
 }
 
+@Test func requestConnectReportsAnOfflineDesktopBehindTheRelay() async throws {
+    for status in [502, 503, 504] {
+ let transport = ScriptedTransport([""], statuses: [status])
+ await #expect(throws: PairingError.unreachable) {
+     try await PairingClient(transport: transport).requestConnect(
+  origin: HostOrigin.parse("https://vibex.xforever.xin/t/host-1"),
+  accountToken: "acct-token"
+     )
+ }
+    }
+}
+
 @Test func awaitConnectApprovalReportsDesktopDecision() async throws {
     let origin = try HostOrigin.parse("http://192.168.1.2:17891")
     func poll(_ status: String) -> String {

@@ -143,15 +143,13 @@ final class DesktopConnectFlow {
     }
 
     private static func message(for error: Error) -> String {
-        if let pairingError = error as? PairingError {
-            switch pairingError {
-            case .accountMismatch, .hostAccountSignedOut, .connectRejected, .connectExpired:
-                return pairingError.errorDescription ?? ""
-            default:
-                break
-            }
-        }
-        return PairingError.accountVerificationUnavailable.errorDescription ?? ""
+ if let pairingError = error as? PairingError, let description = pairingError.errorDescription {
+     return description
+ }
+        if error is URLError {
+     return PairingError.unreachable.errorDescription ?? ""
+ }
+        return error.localizedDescription
     }
 }
 

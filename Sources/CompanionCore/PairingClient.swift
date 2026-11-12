@@ -429,9 +429,9 @@ public struct PairingClient: Sendable {
             body: nil
         )
         guard (200...299).contains(exchange.status) else {
-            throw PairingError.redeemFailed(exchange.status)
+     throw Self.redeemError(status: exchange.status, body: exchange.body)
         }
-        return try Self.parseConnectRequestResult(exchange.body)
+ return try Self.parseConnectRequestResult(exchange.body)
     }
 
     /// Polls until the desktop user answers; transient poll failures are retried until the Host reports expiry.
@@ -810,7 +810,10 @@ public struct PairingClient: Sendable {
         case "account_token_invalid": return .accountTokenInvalid
         case "host_account_signed_out": return .hostAccountSignedOut
         case "account_verification_unavailable": return .accountVerificationUnavailable
-        default: return status == 401 ? .codeInvalid : .redeemFailed(status)
+        default:
+     // A relay answers 502/503/504 without an error envelope when the desktop is offline.
+     if [502, 503, 504].contains(status) { return .unreachable }
+     return status == 401 ? .codeInvalid : .redeemFailed(status)
         }
     }
 
