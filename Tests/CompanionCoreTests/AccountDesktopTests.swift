@@ -26,6 +26,16 @@ import Testing
     #expect(desktops[1].osBadge == "Windows")
 }
 
+@Test func accountDirectorySkipsDeviceLoginsWithoutAHost() {
+    let json = """
+{"records":[
+{"hostId":"session:42","hostName":"iPhone","kind":"local","lastSeenAt":"2026-11-12T11:00:00Z","configSynced":false},
+{"hostId":"host:mac","hostName":"Mac","kind":"local","lastSeenAt":"2026-11-12T10:00:00Z","configSynced":true}
+]}
+"""
+    #expect(AccountDesktop.parseDirectory(Data(json.utf8)).map(\.hostId) == ["mac"])
+}
+
 @Test func accountDirectoryToleratesMissingLists() {
     #expect(AccountDesktop.parseDirectory(Data("{}".utf8)).isEmpty)
     #expect(AccountDesktop.parseDirectory(Data("not json".utf8)).isEmpty)

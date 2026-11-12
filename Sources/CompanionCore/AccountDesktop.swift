@@ -72,7 +72,9 @@ public struct AccountDesktop: Identifiable, Equatable, Sendable {
             // Records without a kind come from desktops that predate host kinds, which were all local.
             guard (entry.kind ?? "local") == "local" else { continue }
             let hostId = rawHostId(entry.hostId ?? "")
-            guard !hostId.isEmpty else { continue }
+     // `session:<id>` is the site's placeholder for a device login without a host
+     // (phones included); there is no computer behind it to connect to.
+     guard !hostId.isEmpty, !hostId.hasPrefix("session:") else { continue }
             let seenAt = [entry.lastSeenAt, entry.updatedAt].compactMap { $0 }.filter { !$0.isEmpty }.max()
             let name = (entry.hostName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             guard let existing = byId[hostId] else {
